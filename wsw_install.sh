@@ -1,3 +1,5 @@
+echo "${step}. 安装zshrc"
+step=$((step + 1))
 grep -E "source ${WSW_REPO_TOP}/source_all_env.sh" ~/.zshrc &>/dev/null
 
 if [[ $? -ne 0 ]]; then

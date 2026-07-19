@@ -1,4 +1,4 @@
-# only for zsh to source, bash is not so good
+# 这个脚本是给zsh去source的
 export PATH=~/bin:$PATH
 export LD_LIBRARY_PATH=~/usr/lib64
 
@@ -23,16 +23,14 @@ alias kls="ls"
 # 下边开始定义函数
 _up_to_have_dir ()
 {
+    # 创建一个subshell，也就是fork当前shell进程，完成目录探测工作，这是否是一个性能糟糕的设计，用一段时间再说吧
     target_dir=$1
-    # 基于PWD变量比pwd命令要靠谱些
-    # 不会因为当前路径不存在就让此函数陷入dead loop
+    # 基于PWD变量比pwd命令要靠谱些, 不会因为当前路径不存在就让此函数陷入dead loop
     cur_dir=${PWD}
     origin_dir=${cur_dir}
     while [[ ! -e ${cur_dir}/${target_dir} ]]; do
-        cur_dir=$(dirname ${cur_dir})
-        if [[ ${cur_dir} == / ]]; then
-            return 1
-        fi
+        cur_dir=${cur_dir:h}
+        [[ ${cur_dir} == / ]] && return 1
     done
     echo ${cur_dir}
     return 0
