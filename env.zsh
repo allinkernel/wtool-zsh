@@ -1,3 +1,8 @@
+# 迁移自 mytool/zsh/wsw-zshrc/wsw.zsh（原 wsw-zshrc）。纯 zsh，由 ~/.zshrc 里的 wtool 块 source。
+#
+# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/links/shell/zsh
+[[ -n "$WTOOL_PROJECT_DIR" ]] || WTOOL_PROJECT_DIR="$HOME/.wtool/links/shell/zsh"
+
 # 这个脚本是给zsh去source的
 export PATH=~/bin:$PATH
 export LD_LIBRARY_PATH=~/usr/lib64
@@ -36,9 +41,20 @@ _up_to_have_dir ()
     return 0
 }
 
+# 原来写的是 cd ${WSW_REPO_TOP}；迁移后自包含：
+# 从本项目真实路径向上找到含 .repo 的目录（也就是 wtool 集合的根）。
 cw ()
 {
-    cd ${WSW_REPO_TOP}
+    local d="${WTOOL_PROJECT_ROOT:-$PWD}"
+    while [[ "$d" != "/" && ! -e "$d/.repo" ]]; do
+        d="${d:h}"
+    done
+    if [[ -e "$d/.repo" ]]; then
+        cd "$d"
+    else
+        echo "cw: 找不到 .repo（不在 repo 工作区内？）" >&2
+        return 1
+    fi
 }
 
 unset gba &>/dev/null
@@ -87,4 +103,3 @@ start ()
     this_is_not_wsl && echo "only wsl support this" && return 1
     powershell.exe -Command "Set-Location -Path \"$(win)\"; Start-Process $1"
 }
-

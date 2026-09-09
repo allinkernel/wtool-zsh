@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  迁移自 mytool/zsh/wsw-zshrc（原 wsw-zshrc）—— 个人 zsh 别名/函数集合。
+
+  priority=20：在 shell/oh-my-zsh(10) 之后加载，这样主题/补全先就位。
+  oh-my-zsh 不再由这里 source —— 它有自己的 wtool 块（见 shell/oh-my-zsh）。
+  纯 zsh（用了 ${cur_dir:h} 等），shells="zsh"。
+-->
+<wtool schema="1" id="shell/zsh" priority="20">
+
+  <env src="env.zsh" shells="zsh"/>
+
+</wtool>
