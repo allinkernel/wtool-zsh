@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  迁移自 mytool/zsh/wsw-zshrc（原 wsw-zshrc）—— 个人 zsh 别名/函数集合。
+  迁移自 mytool/zsh/wsw-zshrc（原 wsw-zshrc）—— 个人 shell 别名/函数集合。
 
   priority=20：在 shell/oh-my-zsh(10) 之后加载，这样主题/补全先就位。
   oh-my-zsh 不再由这里 source —— 它有自己的 wtool 块（见 shell/oh-my-zsh）。
-  纯 zsh（用了 ${cur_dir:h} 等），shells="zsh"。
+
+  env.zsh / env.bash 内容等价（别名、cw、pdd/pss、WSL 那几个小工具），
+  分别由 ~/.zshrc 和 ~/.bashrc 的 wtool 块 source。
+  项目 id 还叫 shell/zsh 只是历史原因，里面已经不是纯 zsh 了。
 -->
 <wtool schema="1" id="shell/zsh" priority="20">
 
-  <env src="env.zsh" shells="zsh"/>
+  <env src="env.zsh"  shells="zsh"/>
+  <env src="env.bash" shells="bash"/>
 
 </wtool>
