@@ -1,7 +1,7 @@
 # 迁移自 mytool/zsh/wsw-zshrc/wsw.zsh（原 wsw-zshrc）。纯 zsh，由 ~/.zshrc 里的 wtool 块 source。
 #
-# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/links/shell/zsh
-[[ -n "$WTOOL_PROJECT_DIR" ]] || WTOOL_PROJECT_DIR="$HOME/.wtool/links/shell/zsh"
+# WTOOL_PROJECT_DIR 由 wtool 块导出 = $HOME/.wtool/wtool-work-dir/links/shell/zsh
+[[ -n "$WTOOL_PROJECT_DIR" ]] || WTOOL_PROJECT_DIR="$HOME/.wtool/wtool-work-dir/links/shell/zsh"
 
 # 这个脚本是给zsh去source的
 export PATH=~/bin:$PATH

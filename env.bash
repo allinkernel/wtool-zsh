@@ -4,7 +4,7 @@
 # 这里的别名/函数本来就不依赖 zsh：路径拼接从 ${var:h} 换成 ${var%/*}，
 # 其它（[[ ]]、command -v、alias、wslpath）bash 都认。
 # 唯一刻意保留的"怪东西"是覆盖 pwd 的那个函数 —— 它是 pdd/pss 的基础。
-[ -n "$WTOOL_PROJECT_DIR" ] || WTOOL_PROJECT_DIR="$HOME/.wtool/links/shell/zsh"
+[ -n "$WTOOL_PROJECT_DIR" ] || WTOOL_PROJECT_DIR="$HOME/.wtool/wtool-work-dir/links/shell/zsh"
 
 export PATH=~/bin:$PATH
 export LD_LIBRARY_PATH=~/usr/lib64
