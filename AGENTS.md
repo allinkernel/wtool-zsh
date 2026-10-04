@@ -49,15 +49,16 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-bash tests/env_test.sh     # 两个 shell 各 10 条、共 20 条，应该全绿（条数以输出为准）
-                           # 没装 zsh 就只跑 bash 那 10 条
+bash tests/env_test.sh     # 两个 shell 各 11 条、共 22 条，应该全绿（条数以输出为准）
+                           # 没装 zsh 就只跑 bash 那 11 条
 ```
 
 - 用例表两个 shell 共用，断言别名、`_up_to_have_dir` / `cw`、`pdd`/`pss`、
   WSL 探测的返回码（按本机实际情况断言）。
-- ⚠️ **已知未覆盖的两份不一致**：`_up_to_have_dir` 走到最顶层时 `env.bash` 会测 `/` 本身、
-  `env.zsh` 直接 `return 1`（复现见 README 那一节）。用例表里没有这一格 —— 要不要改齐
-  见 `BACKLOG.md`「待拍板」，**别在没拍板前动代码**。
+- ⚠️ **`_up_to_have_dir` 的"最顶层那一格"有用例盯着**：往上走到 `/` 时先判"已经在 `/` 了"
+  再往上走，根下的目标才算找得到。这条是 2026-10-04 补的 —— 原来 `env.zsh` 先
+  `${cur_dir:h}` 再判 `== /` 就 `return 1`，和 `env.bash` 不等价。
+  **改动这个函数时两个 shell 一起改，别把"先判后走"的顺序写回去。**
 - 测试自己造临时工作区，**不要**在真 `$HOME` 上试（工作区级 AGENTS.md 里的硬规矩）。
 - 改完 shell 至少 `sh -n` 一遍，但**别把 `sh -n` 当成"能跑"**。
 - 提交只提交到 `ds_dev`，`git add` 之前先 `git diff` 看一遍；不 push、不动 `main`。

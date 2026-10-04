@@ -61,19 +61,19 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
 一路找到 `/` 还是没有就返回 1（不打印）。
 
 - 用 `$PWD` 而不是 `pwd` 命令：当前路径被删掉时不会陷入死循环（代码注释原话）。
-- **两份实现在最顶层那一格上不一致**（`env.bash` 会测 `/` 本身，`env.zsh` 走到 `/` 就直接
-  返回 1）。判据（只依赖 `/usr` 存在）：
+- **`/` 那一格也要测**：往上走到 `/` 时先判"已经在 `/` 了"再往上走，所以挂在根下的
+  目标找得到。判据（只依赖 `/etc` 存在）：
 
   ```sh
   R=~/self/wtool/shell/zsh
   bash -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.bash; _up_to_have_dir usr; echo rc=\$?"
-  #   /        rc=0
   zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_dir usr; echo rc=\$?"
-  #   （空）   rc=1
+  #   两份都打印 / 、rc=0
   ```
 
-  实际用途（找 `.repo` / `.git`）碰不到这种情况；要不要把两边改齐由人拍，
-  见 `BACKLOG.md`「待拍板」。
+  > 原来 `env.zsh` 是先 `${cur_dir:h}` 再判 `== /` 就直接 `return 1`，根下那一格永远
+  > 测不到（`env.bash` 会测），两份因此不等价 —— 2026-10-04 改齐，`tests/env_test.sh`
+  > 加了"最顶层那一格"一条用例；修复经过见 `BACKLOG.md`。
 - 它是 `cw` 的基础；`tools/git-repo-sh-tools` 里另有一份自己的同名副本
   （`env.zsh` / `env.bash` 各一份）。
 
@@ -177,7 +177,7 @@ start code         # 在 Windows 侧启动 VS Code
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # 两个 shell 各 10 条、共 20 条（条数以输出为准）
+bash tests/env_test.sh     # 两个 shell 各 11 条、共 22 条（条数以输出为准）
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
@@ -185,8 +185,8 @@ bash tests/env_test.sh     # 两个 shell 各 10 条、共 20 条（条数以输
 `.repo`、`pdd`/`pss` 能不能跳回来、WSL 探测函数在**当前这台机器**上给不给对的返回码
 （本机是 WSL 就按 WSL 断言，不写死）。
 
-> 用例表是共用的，**每加一条两个 shell 都会跑**；所以清单里的"20 条"是
-> `10 × 2`，数字会随用例增删变化 —— 以脚本最后打印的那一行为准。
+> 用例表是共用的，**每加一条两个 shell 都会跑**；所以清单里的"22 条"是
+> `11 × 2`，数字会随用例增删变化 —— 以脚本最后打印的那一行为准。
 
 ## 文件
 
@@ -194,7 +194,7 @@ bash tests/env_test.sh     # 两个 shell 各 10 条、共 20 条（条数以输
 |---|---|
 | `wtool.xml` | 清单：1 个 `<zshrc>` + 1 个 `<bashrc>`，无 link |
 | `env.zsh` | zsh 版：别名 + 函数（见上） |
-| `env.bash` | bash 版：与 `env.zsh` 等价（唯一已知例外：`_up_to_have_dir` 的最顶层那一格，见上） |
+| `env.bash` | bash 版：与 `env.zsh` 等价（同一张用例表跑两个 shell） |
 | `tests/env_test.sh` | 行为测试：同一张用例表跑两个 shell（条数以输出为准） |
 | `BACKLOG.md` | 这个项目"接下来做什么、哪条待拍板" |
 

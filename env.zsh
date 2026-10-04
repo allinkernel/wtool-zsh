@@ -32,10 +32,12 @@ _up_to_have_dir ()
     target_dir=$1
     # 基于PWD变量比pwd命令要靠谱些, 不会因为当前路径不存在就让此函数陷入dead loop
     cur_dir=${PWD}
-    origin_dir=${cur_dir}
     while [[ ! -e ${cur_dir}/${target_dir} ]]; do
-        cur_dir=${cur_dir:h}
+        # 先判"已经在 / 了"再往上走，让 / 那一格**被测到**（和 env.bash 等价）：
+        # 原来写成先 ${cur_dir:h} 再判 == /，走到 / 就直接 return 1，
+        # 挂在根下的目标永远找不到（2026-10-04 修，用例见 tests/env_test.sh）。
         [[ ${cur_dir} == / ]] && return 1
+        cur_dir=${cur_dir:h}
     done
     echo ${cur_dir}
     return 0

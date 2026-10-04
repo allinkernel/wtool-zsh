@@ -7,36 +7,42 @@
 
 ---
 
-## ⏸ 待拍板
+## ✅ `_up_to_have_dir` 最顶层那一格：两份不等价 —— 已修（2026-10-04）
 
-### 1. `_up_to_have_dir` 最顶层那一格：`env.zsh` 和 `env.bash` 行为不一致
+**原来什么样**（P2 文档/代码核对时发现，方向由用户 2026-10-04 拍板：**以 bash 版为准**）：
 
-**现状**（2026-10-04 P2 文档/代码核对时发现，**只记录，没改代码**）：
-
-- `env.zsh:36-39`——`cur_dir=${cur_dir:h}` 之后立刻 `[[ ${cur_dir} == / ]] && return 1`，
+- `env.zsh`——`cur_dir=${cur_dir:h}` 之后才 `[[ ${cur_dir} == / ]] && return 1`，
   **`/` 本身那一格从来没被测过**；
-- `env.bash:36-43`——`case` 把 `/usr` 切成空串、再用 `[ -z ] && cur_dir=/` 补回 `/`，
-  循环**会**回头测一次 `//<目标>`，所以能找到挂在 `/` 下的目录。
+- `env.bash`——`case` 把 `/usr` 切成空串、再用 `[ -z ] && cur_dir=/` 补回 `/`，
+  循环**会**回头测一次 `//<目标>`，所以挂在 `/` 下的目录找得到。
 
-判据（只依赖 `/usr` 存在，两个 shell 各一条）：
+判据（只依赖 `/etc` 存在，只读、不碰 `$HOME`）：
 
 ```sh
 R=~/self/wtool/shell/zsh
 bash -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.bash; _up_to_have_dir usr; echo rc=\$?"
-#   /        rc=0
 zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_dir usr; echo rc=\$?"
-#   （空）   rc=1
+# 修前：bash 打印 / 、rc=0；zsh 打印空、rc=1
+# 修后：两份都打印 / 、rc=0
 ```
 
-**影响**：本仓库的硬规矩是"两份必须等价"，这是目前**唯一已知**的不等价点；
-但实际用途是找 `.repo` / `.git`，`/` 下不会有这两个东西，所以现实里碰不到。
-`tests/env_test.sh` 也没覆盖这一格（用例表里没有"目标只在 `/` 下"这一条）。
+**怎么修的**：`env.zsh` 改成和 `env.bash` 同构 —— **先判"已经在 `/` 了"再往上走**，
+顺手删掉没被任何地方读的 `origin_dir`（`grep -rn origin_dir` 只剩定义那一行）。
+没有改 `env.bash`（它本来就对）。
 
-**要人拍的三条路**（别替用户选）：
+**验证到什么程度**：
 
-1. 把 `env.zsh` 改成和 `env.bash` 一样（先测 `/` 再 `return 1`）—— 动代码，且要补一条用例；
-2. 反过来把 `env.bash` 改成 `env.zsh` 的行为（`/` 不测）—— 也是动代码；
-3. 认定"`/` 下不会有 `.repo`/`.git`"，两份都保持原样，只在 README 里写明差异
-   （**当前就是这一条**：README「`_up_to_have_dir`」一节 + AGENTS.md §3 已注明）。
+- `bash tests/env_test.sh` → **22 通过 / 0 失败**（两个 shell 各 11 条；
+  新加的"最顶层那一格"用例断言输出是 `/` 且 rc=0，两边同一张表）；
+- **反证**：把新用例拿去跑**旧** `env.zsh`（`git archive HEAD` 到临时目录，
+  只替换测试文件）→ `zsh：最顶层那一格 FAIL（期望 [/|rc=0] 实际 [|rc=1]）`，
+  `21 通过, 1 失败`；说明这条用例真的盯着这个缺陷，不是白加的；
+- `zsh -n env.zsh` / `bash -n tests/env_test.sh` 都过。
 
-拍板之后：改代码的走"一份改动 = 两个 shell + 一条用例 + README"这套流程。
+**结论**：现在两份 `env.*` 没有已知的不等价点。
+
+---
+
+## ⏸ 待拍板
+
+（暂时没有。）

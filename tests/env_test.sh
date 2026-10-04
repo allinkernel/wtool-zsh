@@ -54,6 +54,13 @@ for sh in bash zsh; do
     chk "$sh：_up_to_have_dir 找不到就返回 1" \
         "$(sh_eval "$sh" 'cd /; _up_to_have_dir .repo >/dev/null; echo rc=$?')" "rc=1"
 
+    # 最顶层那一格：目标挂在 / 下时也要命中。env.zsh 原来走到 / 就直接 return 1，
+    # / 那一格从来没被测过（env.bash 会测），两份因此不等价 —— 2026-10-04 修。
+    # 用 "etc"：起点 $T/ws/a/b 在 /tmp 下，往上几层不会撞见同名目录。
+    chk "$sh：_up_to_have_dir 命中挂在 / 下的目录（最顶层那一格）" \
+        "$(sh_eval "$sh" 'test -e /etc || exit 9
+            d=$(_up_to_have_dir etc); rc=$?; printf "%s|rc=%s\n" "$d" "$rc"')" "/|rc=0"
+
     chk "$sh：cw 跳到 repo 根" \
         "$(sh_eval "$sh" 'cw >/dev/null && printf "%s\n" "$PWD"')" "$T/ws"
 
