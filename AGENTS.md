@@ -35,8 +35,12 @@
   command not found"，而文件里看起来明明装过。
 - zsh 版允许用 zsh 专有语法（`${var:h}`、`funcstack`、`<->`……），bash 版**不行**
   （`${var%/*}` + `case`；别把三元运算符那类 bashism 写进 bash 版，`sh -n` 查不出来）。
-- `wtool.xml` 里项目 id 是 `shell/zsh`，**这是契约**（rc 文件的块名、中转链接路径
-  `~/.wtool/wtool-work-dir/links/shell/zsh` 都用它），改名要连带改文档。
+- `wtool.xml` 里**没有 `id=` 属性**：项目身份就是它在工作区里的路径 `shell/zsh`
+  （ADR-0037，写了 `id=` 引擎会硬报错）—— rc 文件的块名（`# >>> wtool:shell/zsh`）、
+  中转链接路径 `~/.wtool/wtool-work-dir/links/shell/zsh` 都用这个路径。改目录名要连带
+  改文档，并走 `wtool move`（改名 = 卸载旧的 + 装新的）。
+- **装 / 测只在容器里做**：本机（WSL）是临时的手工环境，wtool 调通之前不在本地落地；
+  真机上 `wtool install shell/zsh` **必须由用户明确同意**（用户级 `~/.dsh/AGENTS.md` 的硬规矩）。
 - `priority=20`：必须排在 `shell/oh-my-zsh`(10) 之后 —— 主题/补全先就位，
   这里的别名才盖得住。别随手改优先级。
 - `WTOOL_PROJECT_DIR` 的默认值是给"单独 source 本项目"兜底的；
@@ -45,11 +49,15 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-bash tests/env_test.sh     # 20 条，应该全绿；没装 zsh 就只跑 bash 那 10 条
+bash tests/env_test.sh     # 两个 shell 各 10 条、共 20 条，应该全绿（条数以输出为准）
+                           # 没装 zsh 就只跑 bash 那 10 条
 ```
 
 - 用例表两个 shell 共用，断言别名、`_up_to_have_dir` / `cw`、`pdd`/`pss`、
   WSL 探测的返回码（按本机实际情况断言）。
+- ⚠️ **已知未覆盖的两份不一致**：`_up_to_have_dir` 走到最顶层时 `env.bash` 会测 `/` 本身、
+  `env.zsh` 直接 `return 1`（复现见 README 那一节）。用例表里没有这一格 —— 要不要改齐
+  见 `BACKLOG.md`「待拍板」，**别在没拍板前动代码**。
 - 测试自己造临时工作区，**不要**在真 `$HOME` 上试（工作区级 AGENTS.md 里的硬规矩）。
 - 改完 shell 至少 `sh -n` 一遍，但**别把 `sh -n` 当成"能跑"**。
 - 提交只提交到 `ds_dev`，`git add` 之前先 `git diff` 看一遍；不 push、不动 `main`。

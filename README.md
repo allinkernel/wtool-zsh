@@ -3,9 +3,11 @@
 一组**和具体项目无关**的 shell 小工具：跳到 repo 工作区根、记路径再跳回来、WSL 的
 `win` / `start`，以及 `gs` / `gl` / `s` / `kls` 这类短别名。
 
-- 项目 id：`shell/zsh`（历史名字，里面**已经不是纯 zsh 了**）
+- 项目路径（**路径就是它的身份**，没有单独的 `id`，见 ADR-0037）：`shell/zsh`
+  —— 名字是历史遗留，里面**已经不是纯 zsh 了**
 - 加载优先级：`priority=20`（在 `shell/oh-my-zsh`(10) 之后加载）
-- 本仓库**只有两个 env 文件 + 一个测试**，没有 `scripts/`（不需要构建/安装脚本）
+- 本仓库**没有 `scripts/`**（不需要构建/安装脚本）：装到 `$HOME` 里的只有
+  `env.zsh` / `env.bash` 两个文件的 rc 块，外加一个测试
 
 ---
 
@@ -24,10 +26,11 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
 > 受众里有人机器上**没有 zsh**（公司机器很常见），bash 版是必需品。
 > **改一个就要在另一个里做等价修改**，`tests/env_test.sh` 会用同一张用例表把两个 shell 都跑一遍。
 
-`wtool.xml` 里就是这么声明的（没有 `<link>`，全部靠注入 env 块提供）：
+`wtool.xml` 里就是这么声明的（没有 `<link>`，全部靠注入 env 块提供；也**没有 `id=` 属性** ——
+项目身份就是相对工作区的路径 `shell/zsh`，写了 `id=` 反而会被引擎硬报错，见 ADR-0037）：
 
 ```xml
-<wtool schema="1" id="shell/zsh" priority="20">
+<wtool schema="1" priority="20">
   <zshrc  src="env.zsh"/>
   <bashrc src="env.bash"/>
 </wtool>
@@ -55,10 +58,24 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
 #### `_up_to_have_dir <目录名>` —— 往上找目录
 
 从 `$PWD` 开始一层层往上找含 `<目录名>` 的那层，找到就 **打印**那个目录并返回 0；
-一路到 `/` 还没找到就返回 1（不打印）。
+一路找到 `/` 还是没有就返回 1（不打印）。
 
 - 用 `$PWD` 而不是 `pwd` 命令：当前路径被删掉时不会陷入死循环（代码注释原话）。
-- 它是 `cw` 的基础；`tools/git-repo-sh-tools` 里另有一份内联的同名副本。
+- **两份实现在最顶层那一格上不一致**（`env.bash` 会测 `/` 本身，`env.zsh` 走到 `/` 就直接
+  返回 1）。判据（只依赖 `/usr` 存在）：
+
+  ```sh
+  R=~/self/wtool/shell/zsh
+  bash -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.bash; _up_to_have_dir usr; echo rc=\$?"
+  #   /        rc=0
+  zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_dir usr; echo rc=\$?"
+  #   （空）   rc=1
+  ```
+
+  实际用途（找 `.repo` / `.git`）碰不到这种情况；要不要把两边改齐由人拍，
+  见 `BACKLOG.md`「待拍板」。
+- 它是 `cw` 的基础；`tools/git-repo-sh-tools` 里另有一份自己的同名副本
+  （`env.zsh` / `env.bash` 各一份）。
 
 #### `cw` —— 跳到 repo 工作区根
 
@@ -122,6 +139,11 @@ start code         # 在 Windows 侧启动 VS Code
 块会 source 本项目的 `env.zsh` / `env.bash`，并在此之前导出
 `WTOOL_PROJECT_ID` / `WTOOL_PROJECT_DIR` / `WTOOL_PROJECT_ROOT`。
 
+> ⚠️ **wtool 的项目只在容器里装 / 测**（用户级规矩，2026-10-04）：本机（WSL）
+> 是临时的手工环境，wtool 彻底调通之前**不在本地落地**。要在容器里验证就用
+> `--network=host` 挂工作区；**真机上装本项目必须由用户明确同意**，
+> 助手不得自行 `wtool install`。
+
 ## 配置项
 
 本仓库**不读任何配置文件**，全部行为由这几个环境变量决定：
@@ -155,12 +177,16 @@ start code         # 在 Windows 侧启动 VS Code
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # 20 条；没装 zsh 就只测 bash（会打印跳过）
+bash tests/env_test.sh     # 两个 shell 各 10 条、共 20 条（条数以输出为准）
+                           # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
 它把**同一张用例表**喂给两个 shell：别名在不在、`_up_to_have_dir` / `cw` 能不能找到
 `.repo`、`pdd`/`pss` 能不能跳回来、WSL 探测函数在**当前这台机器**上给不给对的返回码
 （本机是 WSL 就按 WSL 断言，不写死）。
+
+> 用例表是共用的，**每加一条两个 shell 都会跑**；所以清单里的"20 条"是
+> `10 × 2`，数字会随用例增删变化 —— 以脚本最后打印的那一行为准。
 
 ## 文件
 
@@ -168,8 +194,9 @@ bash tests/env_test.sh     # 20 条；没装 zsh 就只测 bash（会打印跳�
 |---|---|
 | `wtool.xml` | 清单：1 个 `<zshrc>` + 1 个 `<bashrc>`，无 link |
 | `env.zsh` | zsh 版：别名 + 函数（见上） |
-| `env.bash` | bash 版：与 `env.zsh` 等价 |
-| `tests/env_test.sh` | 20 条行为测试（两个 shell 各一遍） |
+| `env.bash` | bash 版：与 `env.zsh` 等价（唯一已知例外：`_up_to_have_dir` 的最顶层那一格，见上） |
+| `tests/env_test.sh` | 行为测试：同一张用例表跑两个 shell（条数以输出为准） |
+| `BACKLOG.md` | 这个项目"接下来做什么、哪条待拍板" |
 
 > 历史：这里原来只有 `env.zsh`，配置是从 `mytool` 的 `source_all_env.sh` 链上来的；
 > 现在由 wtool 的块加载，不再需要那个链条。
