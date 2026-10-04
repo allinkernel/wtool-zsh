@@ -7,9 +7,9 @@
 
   env.zsh / env.bash 内容等价（别名、cw、pdd/pss、WSL 那几个小工具），
   分别由 ~/.zshrc 和 ~/.bashrc 的 wtool 块 source。
-  项目 id 还叫 shell/zsh 只是历史原因，里面已经不是纯 zsh 了。
+  路径（项目身份，ADR-0037）还叫 shell/zsh 只是历史原因，里面已经不是纯 zsh 了。
 -->
-<wtool schema="1" id="shell/zsh" priority="20">
+<wtool schema="1" priority="20">
 
   <zshrc  src="env.zsh"/>
   <bashrc src="env.bash"/>
