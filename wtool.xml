@@ -11,7 +11,7 @@
 -->
 <wtool schema="1" id="shell/zsh" priority="20">
 
-  <env src="env.zsh"  shells="zsh"/>
-  <env src="env.bash" shells="bash"/>
+  <zshrc  src="env.zsh"/>
+  <bashrc src="env.bash"/>
 
 </wtool>
