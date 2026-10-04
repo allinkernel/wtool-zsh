@@ -7,7 +7,7 @@
 
 ---
 
-## ✅ `_up_to_have_dir` 最顶层那一格：两份不等价 —— 已修（2026-10-04）
+## ✅ `_up_to_have_dir` 最顶层那一格：两份不等价 —— 已修（2026-10-04，提交 `ad39c5e`）
 
 **原来什么样**（P2 文档/代码核对时发现，方向由用户 2026-10-04 拍板：**以 bash 版为准**）：
 
@@ -40,6 +40,7 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
 - `zsh -n env.zsh` / `bash -n tests/env_test.sh` 都过。
 
 **结论**：现在两份 `env.*` 没有已知的不等价点。
+修复提交：`ad39c5e`（`ds_dev`）；反证用的临时目录已删，命令都在上面，可原地重跑。
 
 ---
 
