@@ -23,7 +23,12 @@ mkdir -p "$T/ws/.repo" "$T/ws/a/b"
 
 sh_eval () {   # <shell> <片段>：source 对应 env 后在假工作区里跑
     local sh=$1 snippet=$2
-    ( cd "$T/ws/a/b" && WTOOL_PROJECT_DIR="$proj" "$sh" -c \
+    # 夹具自带干净环境：调用者可能是个 wtool 管着的 shell（块里导出了
+    # WTOOL_PROJECT_ROOT / WTOOL_PROJECT_DIR / WTOOL_PROJECT_ID）。
+    # 不清掉的话 cw 会顺着继承来的 WTOOL_PROJECT_ROOT 跳到真工作区，
+    # "cw 跳到 repo 根"那条断言就会挂（实测 18/2，2026-10-04）。
+    ( cd "$T/ws/a/b" && env -u WTOOL_PROJECT_ROOT -u WTOOL_PROJECT_ID \
+        WTOOL_PROJECT_DIR="$proj" "$sh" -c \
         "set -u; source \"$proj/env.$sh\"; $snippet" ) 2>&1
 }
 
