@@ -1,7 +1,8 @@
 # shell/zsh —— 个人 shell 别名与函数集合
 
 一组**和具体项目无关**的 shell 小工具：跳到 repo 工作区根、记路径再跳回来、WSL 的
-`win` / `start`，以及 `gs` / `gl` / `s` / `kls` 这类短别名。
+`win` / `start`、当前目录树下找 `Android.mk` / `Android.bp` 目标名的 `wrg`，
+以及 `gs` / `gl` / `s` / `kls` 这类短别名。
 
 - 项目路径（**路径就是它的身份**，没有单独的 `id`，见 ADR-0037）：`shell/zsh`
   —— 名字是历史遗留，里面**已经不是纯 zsh 了**
@@ -53,7 +54,7 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
 
 > `s` / `sl` / `lks` / `kls` 四个名字指向同一个 `ls` —— 历史习惯，**本仓库不定义 `ls` 本身**。
 
-### 3. 函数（10 个）
+### 3. 函数（公开 11 个 + 内部 4 个）
 
 #### `_up_to_have_dir <目录名>` —— 往上找目录
 
@@ -112,22 +113,105 @@ gba         # git branch -a，有 batcat 就 | batcat，否则 | cat
 > 同一用户的多个终端共用这一个文件，后敲的 `pwd` 会覆盖先敲的。
 > 这是读代码就能确定的行为。
 
-#### `this_is_wsl` / `this_is_not_wsl` / `win` / `start` —— WSL 相关
+#### `this_is_wsl` / `this_is_not_wsl` —— WSL 探测
 
 | 函数 | 行为 |
 |---|---|
 | `this_is_wsl` | `/usr/bin/wslpath` 存在 → 返回 0；否则返回 1 |
 | `this_is_not_wsl` | 与 `this_is_wsl` 相反 |
-| `win` | 只在 WSL 上有效：`wslpath -w .` 打出当前目录的 Windows 路径；非 WSL 返回 1 |
-| `start <程序>` | 只在 WSL 上有效：用 `powershell.exe` 在**当前目录的 Windows 路径**下 `Start-Process <程序>`；非 WSL 打印 `only wsl support this` 并返回 1 |
+
+> 判断依据是 `/usr/bin/wslpath` 这个路径（代码里写死的），不是 `$WSL_DISTRO_NAME` 之类。
+> 测试按**本机实际情况**断言（在 WSL 上就按 WSL 断言，不写死）。
+
+#### `win` —— 把当前目录翻译成"别的机器也能用"的路径
+
+```sh
+win        # 打路径，一行或两行
+```
+
+**WSL 上（有 `wslpath`）**：就是 `wslpath -w .`，打一行 Windows 路径。非 WSL 上
+`win` 以前是 `return 1`，现在走服务器分支：
+
+| 行 | 内容 | 怎么算出来的 |
+|---|---|---|
+| 1 | `//<ip>/<share><相对路径>` | 读 `/etc/samba/smb.conf` 的 `[share]` + `path = …`，取**最长前缀匹配**目标目录的那个 share（按路径分隔符对齐：share `path=/srv/share` 不会被 `/srv/share2` 命中），拼上目标目录相对 share 的那段 |
+| 2 | `<whoami>@<ip>:<绝对路径>` | 目标目录的绝对路径（`realpath -m` 规范化过），可以直接拿去 `scp` |
+
+- `<ip>`：优先环境变量 `WIN_IP`；没设就从 `ip -4 addr` 里取**第一个非 `lo`** 的地址。
+- smb.conf 的路径可以用 `WTOOL_SMB_CONF` 覆盖（默认 `/etc/samba/smb.conf`）；
+  段名后的 `path =` 认大小写、去首尾空白、去首尾引号，`#` / `;` 开头的行跳过。
+- **算不出来不静默**：
+  - 取不到 IP（`WIN_IP` 没设且 `ip addr` 里没有）→ stderr 打
+    `win: 拿不到本机 IP（WIN_IP 没设，ip addr 里也没有）。` + `请在 .bashrc/.zshrc 里设 WIN_IP=<本机对外的地址>`，
+    **只返回 1，不打印任何一行**；
+  - 读不到 smb.conf → stderr 打 `win: 读不到 samba 配置 <路径>`；
+  - 文件在但没有 share 匹配 → stderr 打 `win: <路径> 里没有 share 的 path 匹配 <目标>`；
+  - 后两种情况**仍然打印 scp 那一行**（它不依赖 samba），退出码是 **1**。
+
+```sh
+WIN_IP=192.168.0.10 win
+# //192.168.0.10/proj/sub
+# mindul@192.168.0.10:/srv/proj/sub
+```
+
+> 判据（不需要真 samba、也不改系统文件）：
+
+```sh
+T=$(mktemp -d); mkdir -p "$T/src/proj/sub"; printf '[proj]\n  path = %s/src/proj\n' "$T" > "$T/smb.conf"
+(cd "$T/src/proj/sub" && source ~/self/wtool/shell/zsh/env.zsh
+ this_is_wsl () { return 1; }            # 把「非 WSL」这条分支压出来
+ WIN_IP=10.1.2.3 WTOOL_SMB_CONF=$T/smb.conf win)
+# //10.1.2.3/proj/sub
+# <你>@10.1.2.3:<$T>/src/proj/sub
+```
+
+#### `start <程序>` —— 在 Windows 侧打开（只 WSL 有效）
+
+用 `powershell.exe` 在**当前目录的 Windows 路径**下 `Start-Process <程序>`；
+非 WSL 打印 `only wsl support this` 并返回 1。
 
 ```sh
 start .            # 在 Windows 资源管理器里打开当前目录
 start code         # 在 Windows 侧启动 VS Code
 ```
 
-> 判断依据是 `/usr/bin/wslpath` 这个路径（代码里写死的），不是 `$WSL_DISTRO_NAME` 之类。
-> 测试按**本机实际情况**断言（本机是 WSL）。
+**路径补全**：`start <TAB>` 补当前目录的文件/目录名（以前只能先 `ls <TAB>` 再把
+`ls` 改成 `start`）：
+
+- bash：`complete -o default -o filenames start`；
+- zsh：装了 `shell/oh-my-zsh`（`priority=10`）时 compinit 已经跑过，用
+  `compdef _files start`；**只装本项目**（没有 compinit）时退回 `compctl -f start`。
+  两条路都是补文件/目录名。
+
+#### `wrg <名字>` / `wrg -i <片段>` —— 找 Android 构建目标名
+
+在**当前目录树下**递归找 `Android.mk` / `Android.bp` 里的目标名，输出
+`文件:行号:命中行`（按文件名、行号排序，可以直接喂给 `grep` / 编辑器跳转）：
+
+| 文件 | 认的写法 |
+|---|---|
+| `Android.mk` | `LOCAL_MODULE := xxx` / `LOCAL_PACKAGE_NAME := xxx`（`:=` 或 `=`，行首可以有空白） |
+| `Android.bp` | `name: "xxx"` |
+
+| 用法 | 匹配方式 |
+|---|---|
+| `wrg libfoo` | **精确**：目标名和 `libfoo` 完全相同（区分大小写） |
+| `wrg -i lib` | **模糊**：目标名里含 `lib`（子串、忽略大小写） |
+
+- `-h` / `--help`：打用法并返回 0；
+- 参数不对/选项不认识：用法打到 stderr，返回 **2**；
+- 当前目录树下没有 `Android.mk` / `Android.bp`：stderr 打
+  `wrg: 当前目录树下没有 Android.mk / Android.bp`，返回 1；
+- 有这两种文件但没有命中：stderr 打 `wrg: 没有匹配 '<模式>' 的目标名`，返回 1。
+
+```sh
+wrg libfoo           # ./foo/Android.mk:3:LOCAL_MODULE := libfoo
+wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",
+                     # ./foo/Android.mk:8:LOCAL_PACKAGE_NAME := FooApp
+```
+
+> 注释里的目标名（`# LOCAL_MODULE := xxx`）不算；精确匹配不认前缀
+> （`wrg lib` 不会命中 `libfoo`）。
 
 ---
 
@@ -155,11 +239,17 @@ start code         # 在 Windows 侧启动 VS Code
 | `PATH` | 前面插一个 `~/bin` | `export PATH=~/bin:$PATH` |
 | `LD_LIBRARY_PATH` | **直接赋值**成 `~/usr/lib64` | 注意是覆盖不是追加：上层传进来的值会被顶掉 |
 | `TERM` | **直接赋值**成 `xterm-256color` | 代码注释：不设成 256 色，vim 等主题显示会受影响 |
+| `WIN_IP` | 非 WSL 上 `win` 的地址来源 | 设了就用它；没设才去 `ip -4 addr` 里找。取不到就报错让你去 `.bashrc` / `.zshrc` 里设它 |
+| `WTOOL_SMB_CONF` | 非 WSL 上 `win` 读哪个 samba 配置 | 默认 `/etc/samba/smb.conf`；测试用它注入假配置，不碰系统文件 |
+| `WRG_PAT` / `WRG_FUZZY` | `wrg` 内部传给 awk 的模式与模式开关 | 不是给人设的，别在 rc 里写 |
 
 ## 快捷键
 
 本仓库**不定义任何快捷键 / key binding**（不设 `bindkey`、不设 `zle`）。
 
+- 唯一和补全有关的是 `start`：bash 用 `complete -o default -o filenames start`，
+  zsh 用 `compdef _files start`（没有 compinit 时 `compctl -f start`）—— 都是"补文件名"，
+  不是新的按键；
 - zsh 侧的补全、历史搜索等快捷键来自 `shell/oh-my-zsh`（`priority=10`，先加载）；
 - fzf 的 `Ctrl-T` / `Ctrl-R` / `Alt-C` 来自 `terminal/fzf`。
 
@@ -170,23 +260,31 @@ start code         # 在 Windows 侧启动 VS Code
 | `cw: 找不到 .repo（不在 repo 工作区内？）`（返回码 1） | 从 `$WTOOL_PROJECT_ROOT`（没设时 `$PWD`）一路往上都没有 `.repo`。确认自己在一个 wtool 工作区的子目录里；`echo $WTOOL_PROJECT_ROOT` 看它指哪 |
 | `pdd` 跳到的不是我以为的目录 | 先 `pss` 看记着什么；`pdd` 读的就是 `/tmp/wsw-temp-pwd-id-$(id -u)`，同一用户其它终端敲过的 `pwd` 会把它覆盖 |
 | `pdd` 报 `cd: ... No such file` | 记下的那个目录已经被删了；`pss` 确认，然后重新 `pwd` 记一次 |
-| `start` 打印 `only wsl support this` 并返回 1 | 不在 WSL 上（没有 `/usr/bin/wslpath`）；这两个函数本来就是给 WSL 用的 |
-| `win` 返回 1 但什么都不打印 | 同上；非 WSL 时 `win` 只是 `return 1` |
+| `start` 打印 `only wsl support this` 并返回 1 | 不在 WSL 上（没有 `/usr/bin/wslpath`）；`start` 本来就是给 WSL 用的 |
+| `start <TAB>` 不补路径 | 看 shell 里有没有注册：bash `complete -p start`、zsh `print ${_comps[start]}`（应打 `_files`）/ `compctl -L start`（应打 `compctl -f start`）；都没有就是项目没装或没重开 shell |
+| `win: 拿不到本机 IP（WIN_IP 没设，ip addr 里也没有）。` | 非 WSL 上取不到地址。按提示在 `.bashrc` / `.zshrc` 里 `export WIN_IP=<本机对外的地址>` |
+| `win: 读不到 samba 配置 /etc/samba/smb.conf` | 这台机器没装/没配 samba。要么装上并配 `[share]` + `path =`，要么临时 `WTOOL_SMB_CONF=<别的文件>`；scp 那一行照样会给 |
+| `win: /etc/samba/smb.conf 里没有 share 的 path 匹配 <目标>` | 当前目录不在任何 share 的 `path` 下面（或 share 的 path 写的是软链/相对路径）。`testparm` 看一眼 samba 实际认的 path；scp 那一行照样会给 |
+| `win` 在非 WSL 上只打了 scp 一行、返回 1 | 这就是"samba 那半没算出来"，看上面两条的 stderr；scp 行是可以直接用的 |
+| `wrg: 当前目录树下没有 Android.mk / Android.bp`（返回码 1） | 站错目录了（`wrg` 只看当前目录往下）；`cd` 到源码树根部再跑 |
+| `wrg: 没有匹配 'xxx' 的目标名`（返回码 1） | 精确模式要求名字完全一样（区分大小写）；想按片段找就 `wrg -i 片段` |
 | 敲 `gs` 说 command not found | 这个 shell 的 rc 里没有 wtool 块 —— 项目没装，或者装完没重开 shell（`exec $SHELL`） |
 
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # 两个 shell 各 11 条、共 22 条（条数以输出为准）
+bash tests/env_test.sh     # 67 条（两个 shell 各 33 条上下，条数以输出为准）
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
 它把**同一张用例表**喂给两个 shell：别名在不在、`_up_to_have_dir` / `cw` 能不能找到
-`.repo`、`pdd`/`pss` 能不能跳回来、WSL 探测函数在**当前这台机器**上给不给对的返回码
-（本机是 WSL 就按 WSL 断言，不写死）。
+`.repo`、`pdd`/`pss` 能不能跳回来、`start` 的补全注册、`win` 的 WSL 分支**逐字等于**
+`wslpath -w .`、`win` 的服务器分支（用假 `smb.conf` + `WIN_IP` 注入，最长前缀/路径边界/
+三种报错各一条）、`wrg` 的精确/模糊/注释/空目录/用法，以及 WSL 探测函数在
+**当前这台机器**上给不给对的返回码（本机是 WSL 就按 WSL 断言，不写死）。
 
-> 用例表是共用的，**每加一条两个 shell 都会跑**；所以清单里的"22 条"是
-> `11 × 2`，数字会随用例增删变化 —— 以脚本最后打印的那一行为准。
+> 用例表是共用的，**每加一条两个 shell 都会跑**；数字会随用例增删变化 ——
+> 以脚本最后打印的那一行为准（改前是 22 条）。
 
 ## 文件
 
@@ -196,6 +294,7 @@ bash tests/env_test.sh     # 两个 shell 各 11 条、共 22 条（条数以输
 | `env.zsh` | zsh 版：别名 + 函数（见上） |
 | `env.bash` | bash 版：与 `env.zsh` 等价（同一张用例表跑两个 shell） |
 | `tests/env_test.sh` | 行为测试：同一张用例表跑两个 shell（条数以输出为准） |
+| `architecture.md` | 代码现在长什么样（现状，只写现状） |
 | `BACKLOG.md` | 这个项目"接下来做什么、哪条待拍板" |
 
 > 历史：这里原来只有 `env.zsh`，配置是从 `mytool` 的 `source_all_env.sh` 链上来的；
