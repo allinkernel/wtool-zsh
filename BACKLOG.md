@@ -7,6 +7,53 @@
 
 ---
 
+## ✅ `start` 加路径补全 / `win` 加服务器分支 / 新增 `wrg` —— 做完（2026-10-06，提交 `a207795`）
+
+**做了什么**（`env.zsh` + `env.bash` 同改）：
+
+- `start <TAB>` 补当前目录的文件/目录名：bash 用 `complete -o default -o filenames start`；
+  zsh 跑过 compinit（装了 `shell/oh-my-zsh` 时）用 `compdef _files start`，
+  只装本项目、没有 compinit 时退回 `compctl -f start`；
+- `win` 的非 WSL（普通服务器）分支：打两行 —— samba 路径
+  `//<ip>/<share><相对路径>`（读 `WTOOL_SMB_CONF`，默认 `/etc/samba/smb.conf`；
+  `[share]` 段 + 段里的 `path =`，**最长前缀**匹配、按路径分隔符对齐）+ scp 路径
+  `<user>@<ip>:<绝对路径>`。`ip` 取 `WIN_IP`，没设就从 `ip -4 addr` 取第一个非 `lo` 的地址；
+  取不到 IP / 读不到配置 / 没有 share 匹配，都在 stderr 说清楚并返回 1
+  （后两种仍然给出 scp 那一行）。**WSL 分支没动**：还是 `wslpath -w .`；
+- `wrg <名字>` / `wrg -i <片段>`：在当前目录树下找 `Android.mk`（`LOCAL_MODULE` /
+  `LOCAL_PACKAGE_NAME`）与 `Android.bp`（`name: "xxx"`）的构建目标名，
+  精确 / 模糊两种模式，输出 `文件:行号:命中行`。
+
+**验证到什么程度**：
+
+- `bash tests/env_test.sh` → **67 通过 / 0 失败**（改前 22 条：把 HEAD 那份 `git archive`
+  到临时目录、对旧代码跑过一遍，22 通过 0 失败）；
+- `win` 的 WSL 分支：`HEAD~1` 的旧文件与新文件，在 4 个目录（含带空格的路径）× 两个 shell
+  下输出**逐字一致**；测试里另有一条断言"输出等于 `wslpath -w .`"；
+- `win` 的服务器分支：用**假 `smb.conf`**（`WTOOL_SMB_CONF` 注入，不碰真 `/etc/samba`）跑 ——
+  最长前缀胜出、`path=/ws/a` 不被 `/ws/ab` 命中、三种失败各有用例，两个 shell 同一张表；
+- `start <TAB>`：pty 驱动真交互 shell 实测（把 `start` 覆盖成会回声参数的函数，
+  敲 `start li<TAB><Enter>`，看执行到的是 `lib` 还是 `li`）—— 本机 bash / zsh /
+  zsh+compinit 三条路都补出 `lib`；**反证**：同一个探针换成 `complete -A hostname start`
+  就补不出来，说明探针真的在测补全；
+- **容器验证**（2026-10-06，`ubuntu:24.04`、`--network=host`、工作区 `:ro` 挂载）：
+  `bash container-raw.sh` → `./install.sh` → `eval "$(sh ~/.wtool/bootstrap/wtool.sh doctor --quiet)"`
+  （等价于 `exec $SHELL`）→ `wtool sudo-bootstrap` → `wtool install shell/zsh`
+  （**没有**跑 `wtool bootstrap`）。装出来的块 `head=a2077954e81d` 就是本提交。容器里：
+  - `start li<TAB>` → `lib`（bash 和 zsh 都补出来；反证探针也跑了）；
+  - `win`（容器不是 WSL）→ `//10.1.2.3/proj/sub` + `root@10.1.2.3:<目录>`、rc=0；
+    读不到 `smb.conf`、没有匹配的 share → rc=1 且报错清楚；
+  - `wrg libfoo` → `./foo/Android.mk:1:LOCAL_MODULE := libfoo`；
+    `wrg -i LIB` → `Android.bp` 与 `Android.mk` 两个文件都命中。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/shell/zsh && bash tests/env_test.sh    # 67 通过, 0 失败
+```
+
+---
+
 ## ✅ `_up_to_have_dir` 最顶层那一格：两份不等价 —— 已修（2026-10-04，提交 `ad39c5e`）
 
 **原来什么样**（P2 文档/代码核对时发现，方向由用户 2026-10-04 拍板：**以 bash 版为准**）：
