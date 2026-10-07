@@ -8,6 +8,146 @@
 
 ---
 
+## ✅ `wrg` 加 rg/grep 风格选项（含 `-A/-B/-C` 上下文行）+ 选项位置自由 —— 做完（2026-10-07，提交 `24c38fe`）
+
+**需求（用户 2026-10-07）**：`wrg` 要像 rg/grep 那样有 `-A/-B/-C`（上下文行）、
+`-t/--type`、`-l/--files`、`-c/--count`、`-m/--max-count`、`--color`、`-e`、`--`、`-v`，
+而且**选项位置自由**（`wrg system_image_defaults -A3`、`wrg x -i`、`wrg -A 2 x -i` 都要能跑）。
+硬不变量不变：三后端输出逐字一致（`cmp` 钉着）、两个 shell 的 `wrg` 段逐字等价。
+
+**做了什么**（`env.zsh` + `env.bash` 同改；`wrg` 段 487 → **865 行**，两份**逐字相同**
+—— 新写的代码全用 `[ ]`，所以连 `[[ ]]` / `[ ]` 这点差异都没有；`_WRG_AWK` 段 md5
+两边都是 `3a1db3018f4602a4a76d5cc9168d1bfc`）：
+
+- **解析**：手写全参数扫描（不用 `getopts` —— POSIX 那套不认长选项，也做不到"选项写在查询串后面"）。
+  `--` 之前按选项解释、之后一律位置参数；短选项簇里布尔项就地吃掉，碰到 `A B C m e t`
+  就把**剩下的字符**当值（`-ilA3` = `-i -l -A 3`），剩下的为空就吃下一个参数（`-A 3`）；
+  长选项 `--x=v` / `--x v` 都认；选项和查询串混着写都行，位置参数**最多一个**
+  （多个 → rc 2 + `只认一个查询串（多出来的：…；多个名字请用 -e）`）。
+- **上下文行**（关键约束：必须由共用 awk 算，不能用 rg/grep 自带的 `-A/-B`）：新增
+  `WRG_PASS=ctx` —— shell 侧照样先 `sort -t: -k1,1 -k2,2n`（`-m` 截断在这之后、展开之前），
+  ctx pass 按路径攒一批，`flush()` 把命中窗口 `[行号-B, 行号+A]` 并成块（重叠/相邻**合并**），
+  再 `getline < 路径` 逐行读回文件，块里的行按形状打：命中行 `路径:行号:原文`（照旧分两段红/绿）、
+  上下文行 `路径-行号-原文`（**不着色**）、**块与块之间**（含跨文件）一行 `--`（grep 惯例）；
+  读完 `close()`（不攒 fd），文件读不出来时退化成"只打命中行"。`-A/-B/-C` **只影响显示**
+  （命中判定 / 排序 / 退出码不变），`-C 0` 等于不写、走老的 `paint` 路径 → 输出与改造前逐字一致。
+- **新选项**：`-t/--type bp|mk|make`（可重复 / 逗号分隔；判类别仍是共用 awk 的 `kind()`，
+  外面再加一层 `WRG_KINDS` 掩码 —— 三条后端的文件集合不会各说各话；预检提示语跟着类型走）、
+  `-l/--files`、`-c/--count`（`路径:条数`）、`-m/--max-count`（**全局**、排序后取前 n、
+  `-m 0` → rc 1）、`-e/--regexp`（多个查询串合成 rg 粗筛的**一个 alternation**，真判命中仍回 awk；
+  模糊时每个名字各算一次前缀、各打各的表头，某个名字一个都没枚举到就只给它一行 stderr 警告）、
+  `--color=auto|always|never`、`--`、`-v/--version`（`wrg 1.0（后端 rg）`）。
+- **颜色语义**（rg 的口径，两层）：CLI 的 `--color=always` **压过 `NO_COLOR`**；
+  env 里的 `WRG_COLOR=always` **仍旧被 `NO_COLOR` 压过**；`--color=never` 压过 `WRG_COLOR`。
+- 未知选项 / 缺值 / `-A/-B/-C/-m` 的值不是非负整数 / `-t`、`--color` 取值不认 /
+  位置参数多个 / 一个查询串都没有 → 都是 **rc 2 + 用法**；`-h` / `--help` / `-v` 是 stdout + rc 0。
+
+**验证到什么程度**：
+
+- `bash tests/env_test.sh`（本机 WSL，rg 14.1.0 + fd 9.0.0）：**499 通过 / 2 失败**
+  （改前 299 通过 / 同样那 2 条；新加 200 条 = 每个 shell +100）。那 2 条失败还是
+  `win | head -1` 的破管道老毛病 —— `git show 24c38fe^:env.zsh` 那份**改动前**的代码同样失败，
+  与 wrg 无关；
+- **反向验证**：新测试脚本配改动前的 `env.zsh` / `env.bash`（`24c38fe^`）跑
+  → **351 通过 / 150 失败**（148 条 wrg 新用例 + 那 2 条 win 老毛病）；
+  脚本比对过：77 条字面量新断言里**没有一条**在旧实现上也是 ok 的（"两边都报错所以相等"
+  这种假通过不存在——位置自由那几条都锚定到字面量期望值）；
+- 容器 `wrg-test`（Ubuntu 24.04、**mawk 1.3.4**、非 WSL、没有 `ip`、rg + fdfind）：
+  **497 通过 / 0 失败**；
+- `zsh -n env.zsh` / `bash -n env.bash` / `sh -n env.bash` / `sh -n env.zsh` /
+  `bash -n tests/env_test.sh` 全过；两份 `wrg` 段机械比对**逐字相同**（各 865 行）；
+- **容器实测**（`/aosp/android16-release`，真 AOSP 16，默认后端 rg）：
+
+  ```
+  $ wrg system_image_defaults -A3          # ← 用户截图那条，现在能跑了（选项写在查询串后面）
+  ./build/make/target/product/generic/Android.bp:463:    name: "system_image_defaults",
+  ./build/make/target/product/generic/Android.bp-464-    module_type: "android_filesystem_defaults",
+  ./build/make/target/product/generic/Android.bp-465-    config_namespace: "ANDROID",
+  ./build/make/target/product/generic/Android.bp-466-    bool_variables: ["TARGET_ADD_ROOT_EXTRA_VENDOR_SYMLINKS"],
+  --
+  ./build/make/target/product/generic/Android.bp:481:    name: "system_image_defaults",
+  ./build/make/target/product/generic/Android.bp-482-    partition_name: "system",
+  ./build/make/target/product/generic/Android.bp-483-    base_dir: "system",
+  ./build/make/target/product/generic/Android.bp-484-    stem: "system.img",
+
+  $ wrg systemimage -A3                    # 20 行；924 / 925 两个命中并成一块（925 只出现一次）
+  ./build/make/core/Makefile:924:.PHONY: systemimage
+  ./build/make/core/Makefile:925:systemimage:
+  ./build/make/core/Makefile-926-
+  ./build/make/core/Makefile-927-# -----------------------------------------------------------------
+  ./build/make/core/Makefile-928-
+  --
+  ./build/make/core/Makefile:3623:systemimage: $(INSTALLED_SYSTEMIMAGE_TARGET)
+  …
+
+  $ wrg -i systemimage -C1 | head -5       # 全文 50 行 / 15 条命中 / 11 个 --
+  ./build/make/core/Makefile-923-# if they don't do anything.
+  ./build/make/core/Makefile:924:.PHONY: systemimage
+  ./build/make/core/Makefile:925:systemimage:
+  ./build/make/core/Makefile-926-
+  --
+
+  $ wrg -l systemimage                     # ./build/make/core/Makefile
+  $ wrg -c systemimage                     # ./build/make/core/Makefile:5
+
+  $ NO_COLOR= WRG_COLOR=always wrg system_image_defaults -A3 | cat -v | head -2
+  ./build/make/target/product/generic/Android.bp:463:    name: "^[[1;31msystem_image_defaults^[[0m",
+  ./build/make/target/product/generic/Android.bp-464-    module_type: "android_filesystem_defaults",   ← 上下文行零 ANSI
+  $ NO_COLOR=1 wrg --color=always system_image_defaults -A3 | head -1 | cat -v
+  ./build/make/target/product/generic/Android.bp:463:    name: "^[[1;31msystem_image_defaults^[[0m",   ← 显式 always 压过 NO_COLOR
+  ```
+
+- **三后端 `cmp`**（真 AOSP 上：`-i systemimage -C1` 的 50 行 + 着色版 `system_image_defaults -A3`）：
+  `auto` / `rg` / `fd`(fdfind) 三份与 `find` **纯文本、着色各 3 组 `cmp` 全 OK**，
+  管道输出 ESC 计数 = 0；
+- **耗时**（同一棵树，各跑 3 次取区间）：`wrg systemimage` 2714–2760 ms、
+  `-A3` 2705–2746 ms、`-C1` 2725–2740 ms、`-C3` 2747–2824 ms ——
+  **上下文本身没有量得出来的额外开销**（瓶颈是 rg 扫那棵 169G 的树）；
+  `-i systemimage`（模糊那条路要多扫一遍来枚举目标名）不带上下文 5811 ms / `-C1` 5572 ms /
+  `-C3` 5574 ms（开销在模糊那一遍枚举上，与 `-C` 无关）；
+  `find` 后端 `-i systemimage -C1` = 29134 ms（它不跳 ignore 目录，慢是后端本身的老差异）。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/shell/zsh && bash tests/env_test.sh        # 499 通过, 2 失败（2 条是 win 的老毛病）
+
+# 反向验证：新用例配改动前的实现（应当 351 通过 / 150 失败）
+rm -rf /tmp/oldimpl && mkdir /tmp/oldimpl &&
+  git show 24c38fe^:env.zsh  > /tmp/oldimpl/env.zsh &&
+  git show 24c38fe^:env.bash > /tmp/oldimpl/env.bash &&
+  cp -r tests /tmp/oldimpl/ &&
+  bash /tmp/oldimpl/tests/env_test.sh
+
+docker exec wrg-test bash -c 'bash /wtool/shell/zsh/tests/env_test.sh | tail -1'   # 497 通过, 0 失败
+
+docker exec wrg-test bash -c 'cd /aosp/android16-release &&
+  WTOOL_PROJECT_DIR=/wtool/shell/zsh . /wtool/shell/zsh/env.bash
+  wrg system_image_defaults -A3'                           # 9 行，含一行 --（就是上面那段）
+
+# 三后端 cmp（纯文本）
+docker exec wrg-test bash -c 'cd /aosp/android16-release &&
+  WTOOL_PROJECT_DIR=/wtool/shell/zsh . /wtool/shell/zsh/env.bash
+  for v in auto rg fd find; do WRG_SEARCH=$v wrg -i systemimage -C1 > /tmp/c-$v.txt; done
+  cmp /tmp/c-auto.txt /tmp/c-find.txt && cmp /tmp/c-rg.txt /tmp/c-find.txt &&
+  cmp /tmp/c-fd.txt /tmp/c-find.txt && echo cmp-ok'
+```
+
+**已知边界 / 没做**（都写进 `architecture.md` §4.5 / §4.5.4 了）：
+
+- `-t make` 的文件名集合里有 `*.mk`，所以"树里只有 Android.mk"时**预检**算"有文件"
+  （报"没有匹配"而不是"树下没有 …"）—— 三条后端一致；
+- `-m` 是**全局**的（不是 grep 的"每文件"语义），而且是"排序后取前 n 条"
+  （不是"边读边停"）；可观测行为一样；
+- `-c` 只列**有命中**的文件（`grep -rc` 会连 0 条的文件一起列）—— 有意的，
+  不然三条后端的文件集合会打起来；
+- `-v` 定成 `--version`（不是 grep 的"反向匹配"），版本号先写死 `wrg 1.0`；
+  实现里没做"版本从哪读"，改版本号要动 `env.zsh` / `env.bash` 两处；
+- 上下文行**永不着色**（rg 默认会给上下文行上暗色），按需求实现；
+- 没做：`--color=ansi`（只有 auto/always/never）、`-n` / `-H` 这类"关掉行号 / 文件名"的开关、
+  颜色值可配置。
+
+---
 ## ✅ `wrg` 高亮改成"分两段"：命中段红粗 + 目标名其余部分绿 —— 做完（2026-10-07，提交 `98d976e`）
 
 **需求（用户 2026-10-07）**：模糊匹配（`wrg -i <输入>`）命中时**整个目标名**都要着色 ——
