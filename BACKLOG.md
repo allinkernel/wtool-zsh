@@ -7,6 +7,89 @@
 
 ---
 
+## ✅ `wrg` 扩到第三类文件：Makefile 的构建目标名 —— 做完（2026-10-07，提交 `3f850ed`）
+
+**做了什么**（`env.zsh` + `env.bash` 同改，两份的 `wrg` 段各 325 行、逐字等价）：
+
+- 文件集合从两类扩成**三类**（按 basename 分类，`kind()`）：
+  - `Android.bp` → `name: "X"`（不变）；
+  - `Android.mk` → `LOCAL_MODULE` / `LOCAL_PACKAGE_NAME`（不变）；
+  - **其它 Makefile**（`Makefile` / `makefile` / `GNUmakefile` / `*.mk`（`Android.mk` 除外）/ `*.mak`）
+    → **构建目标名**：规则行 `^[[:space:]]*<目标>([[:space:]]+<目标>)*[[:space:]]*:` 冒号前那串
+    **不含 `=` `$` `#` 的词**，外加 `.PHONY: <目标> …` 声明的词；一行多个目标逐个算，
+    取第一个命中的（一行只输出一次、高亮只包那个词）；
+- **反例**（都不算，测试逐条钉着）：`VAR := x` / `VAR ::= x`（冒号紧跟 `=` / `::=` 是赋值）、
+  `VAR ?= x` / `VAR = x` / `export A := b`（扫到 `=` 否决整行）、`ifeq (...)` / `include $(...)`
+  （目标不许有 `$`）、`$(MKTARGET): dep`、`# 注释: 里的冒号`、`.PHONY: $(TARGETS)`；
+  `Android.mk` 只走 Android 语义，**它里面的规则行不算**（不然同一个目标被两套语义各算一遍）；
+- **三条后端同步扩**：
+  - rg：三次**粗筛** —— `-g Android.bp`、`-g Android.mk`、
+    `--type amake --type make -g '!Android.bp' -g '!Android.mk'`（`amake` = `*.bp`/`*.mk`、
+    `make` = `Makefile`/`*.mk`/`*.mak` 那一族；`Makefile.am`/`.in` 会被捎上，由 awk 按 basename 丢掉），
+    合并后**再过一遍共用的 awk（新的 `WRG_PASS=recheck`）**才判命中 ——
+    正则只是粗筛，最终判定回到同一段 awk，三条后端 + 两个 shell 才逐字一致。
+    Makefile 那套粗筛：精确 `(^|[^[:alnum:]_])<值>([^[:alnum:]_]|$)`、模糊 `(?i:<值>)`
+    （**模糊不能加词边界**：`-i system` 要能命中 `vbmetasystemimage`）；
+  - fd：glob 扩成 `{Android.bp,Android.mk,Makefile,makefile,GNUmakefile,*.mk,*.mak}`；
+  - find：`-name` 列表同步扩；
+- 报错文字跟着改：`wrg: 当前目录树下没有 Android.mk / Android.bp` →
+  `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`（`Makefile.am` / `.in` 不算）；
+- **顺手修了一个老 bug**：`Android.mk` 的高亮位置原来差一格
+  （`vs = RSTART + RLENGTH - 1 - length(v)` 没区分"匹配尾巴是不是值的一部分"），
+  `LOCAL_MODULE := libfoo` 会把 ` libfo` 包红；现在按各类文件分别算值起点，
+  `LOCAL_MODULE := ^[[1;31mlibfoo^[[0m` 才对（新用例钉住）。
+
+**验证到什么程度**：
+
+- `bash tests/env_test.sh`（本机 WSL，rg 14.1.0 + fd 9.0.0 都在）：**199 通过 / 0 失败**
+  （改前 129）；PATH 收窄成"只有 rg"→ 185、"只有 fd"→ 179、"rg/fd 都没有（纯 find）"→ 161，
+  **四种都 0 失败**（后端相关用例按环境跳过）；
+  容器里（`wrg-test`：rg + fdfind 都在、没有 `ip`）：**195 通过 / 0 失败** ——
+  差的 4 条是 WSL / `ip addr` 那几条"按本机实际情况断言"的用例，与 wrg 无关（逐条 diff 过）；
+- **容器实测**（`/aosp/android16-release`，真 AOSP）：
+  - `wrg systemimage` → **5 行**，含 `./build/make/core/Makefile:924:.PHONY: systemimage`
+    与 `:925:systemimage:`、`:3623:`、`:7645:`、`:7736:`；三后端 rg/fd/find **各 5 行、
+    md5 全 `95222a35ede3d0885a28eb88b396bf4c`、`cmp` 逐字一致**；
+  - `wrg -i systemimage` → **9 行**，多出 `systemimage-nodeps snod:`、
+    `./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage`、`:1384:vbmetasystemimage:`；
+    三后端**各 9 行、md5 全 `dac4207661b26d386937c7e12694b32c`、`cmp` 一致**；
+  - **独立交叉核对**（都不用 `wrg` 那段 awk）：① `find` 列出同一批文件（**19,346 个三类文件**，
+    其中 Makefile 类 6,238 个），Python 另写一份判定 → 精确 5 行 / 模糊 9 行，
+    **与 `wrg` 输出 `cmp` 逐字一致**；② `grep -E`（第三套正则引擎）按"规则行 + `.PHONY` 声明"数 →
+    精确 **5 行**，**`cmp` 也一致**；③ 用户手动那条 `rg --type amake --type make systemimage`
+    是 **31 行**（它按"文本任意出现"算），`wrg` 的 5 行**全在里面**；多出来的 26 行正是规格里
+    要排除的（`systemimage_intermediates :=$= …` 这种赋值、`#` 注释、依赖列表里的名字）；
+  - **awk 实现交叉**：宿主机是 **gawk 5.2.1**、容器里是 **mawk 1.3.4**，同一条命令三个后端
+    输出**逐字一致**（`cmp`）；
+  - 耗时（容器，两轮，页缓存热）：精确 `systemimage` → **rg 2.73/2.70s、fd 2.21/2.14s、
+    find 10.29/10.26s**；模糊 `-i systemimage` → **rg 2.75/2.77s、fd 2.14/2.14s、find 10.26/10.33s**
+    （fd 比 rg 略快，和上一轮同一个形状：rg 要为三套写法各遍历一次全树）；
+  - 高亮原始字节：`NO_COLOR= WRG_COLOR=always wrg systemimage | cat -v` →
+    `./build/make/core/Makefile:925:^[[1;31msystemimage^[[0m:`（只包目标名那一段）；
+- `zsh -n env.zsh` / `sh -n env.zsh` / `bash -n env.bash` / `sh -n env.bash` /
+  `bash -n tests/env_test.sh` 都过。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/shell/zsh && bash tests/env_test.sh        # 199 通过, 0 失败
+docker exec wrg-test zsh -c 'export WTOOL_PROJECT_DIR=/wtool/shell/zsh;
+  . /wtool/shell/zsh/env.zsh; cd /aosp/android16-release;
+  for v in rg fd find; do WRG_SEARCH=$v wrg systemimage | md5sum; done'   # 三个 md5 一样
+docker exec wrg-test zsh -c 'export WTOOL_PROJECT_DIR=/wtool/shell/zsh;
+  . /wtool/shell/zsh/env.zsh; cd /aosp/android16-release;
+  NO_COLOR= WRG_COLOR=always wrg systemimage | cat -v | head -3'          # ^[[1;31msystemimage^[[0m
+```
+
+**已知边界（都写进 `architecture.md` §4.5.1 / README 的排错表了）**：
+
+- `Makefile.am` / `Makefile.in` **不在**文件集合里（rg 的 `--type make` 会捎上，awk 按 basename 丢掉）；
+  只有它们的树算"没有可搜文件"；
+- `systemimage_intermediates` 这类**变量名**按规格**不算**目标名（它是 `:=` 赋值）——
+  `wrg -i systemimage` 不会给出它；要找变量得用 `rg`。
+
+---
+
 ## ✅ `wrg` 换三级搜索后端（rg → fd → find）+ 命中片段高亮 —— 做完（2026-10-07，提交 `0769c0f`）
 
 **做了什么**（`env.zsh` + `env.bash` 同改，两份的 `wrg` 段各 228 行、逐字等价）：
