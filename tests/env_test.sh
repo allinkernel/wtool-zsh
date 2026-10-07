@@ -400,17 +400,20 @@ $(whoami)@10.1.2.3:$target"
         *) bad "$sh：取不到 IP 的报错没提 WIN_IP [$out]" ;;
     esac
 
-    # WIN_IP 没设时的兜底：从 ip addr 取（本机没有非 lo 的 IPv4 就跳过这条）
-    real_ip=$(ip -4 addr show 2>/dev/null | awk '
-        /^[0-9]+:[[:space:]]/ { iface = $2; sub(/:$/, "", iface); next }
-        iface != "lo" && $1 == "inet" { sub(/\/.*/, "", $2); print $2; exit }')
-    if [ -n "$real_ip" ]; then
-        chk "$sh：win（非 WSL）WIN_IP 没设时用 ip addr 里的地址" \
-            "$(sh_eval "$sh" "$win_srv
-                unset WIN_IP
-                WTOOL_SMB_CONF='$smb' win | tail -1")" \
-            "$(whoami)@$real_ip:$target"
-    fi
+    # _win_ip 只认 WIN_IP（不再探测 ip addr）
+    chk "$sh：_win_ip 没设 WIN_IP → rc=1（不探测）" \
+        "$(sh_eval "$sh" 'unset WIN_IP; _win_ip; echo rc=$?')" "rc=1"
+    chk "$sh：_win_ip 设了 WIN_IP → 原样打印" \
+        "$(sh_eval "$sh" 'WIN_IP=203.0.113.7; _win_ip')" "203.0.113.7"
+    chk "$sh：win（非 WSL）没设 WIN_IP → rc=1，stdout 一行都不打" \
+        "$(sh_eval "$sh" "$win_srv
+            unset WIN_IP
+            WTOOL_SMB_CONF='$smb' win 2>/dev/null")" ""
+    chk "$sh：win（非 WSL）设了 WIN_IP → 两行都出来了" \
+        "$(sh_eval "$sh" "$win_srv
+            WIN_IP=203.0.113.7
+            WTOOL_SMB_CONF='$smb' win 2>/dev/null | tail -1")" \
+        "$(whoami)@203.0.113.7:$target"
 
     # ---- wrg：Android.mk / Android.bp 里的目标名 ----
     chk "$sh：wrg 精确匹配 Android.mk 的 LOCAL_MODULE" \

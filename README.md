@@ -161,7 +161,8 @@ win        # 打路径，一行或两行
 | 1 | `//<ip>/<share><相对路径>` | 读 `/etc/samba/smb.conf` 的 `[share]` + `path = …`，取**最长前缀匹配**目标目录的那个 share（按路径分隔符对齐：share `path=/srv/share` 不会被 `/srv/share2` 命中），拼上目标目录相对 share 的那段 |
 | 2 | `<whoami>@<ip>:<绝对路径>` | 目标目录的绝对路径（`realpath -m` 规范化过），可以直接拿去 `scp` |
 
-- `<ip>`：优先环境变量 `WIN_IP`；没设就从 `ip -4 addr` 里取**第一个非 `lo`** 的地址。
+- `<ip>`：**必须来自环境变量 `WIN_IP`** —— 本命令**不做 `ip addr` 探测**（服务器上探到的
+  常常是内网/VPC 地址，猜错比不猜更坏）。没设就报错、不打印任何一行。
 - smb.conf 的路径可以用 `WTOOL_SMB_CONF` 覆盖（默认 `/etc/samba/smb.conf`）；
   段名后的 `path =` 认大小写、去首尾空白、去首尾引号，`#` / `;` 开头的行跳过。
 - **算不出来不静默**：
@@ -421,7 +422,7 @@ wrg systemimage -A3
 | `PATH` | 前面插一个 `~/bin` | `export PATH=~/bin:$PATH` |
 | `LD_LIBRARY_PATH` | **直接赋值**成 `~/usr/lib64` | 注意是覆盖不是追加：上层传进来的值会被顶掉 |
 | `TERM` | **直接赋值**成 `xterm-256color` | 代码注释：不设成 256 色，vim 等主题显示会受影响 |
-| `WIN_IP` | 非 WSL 上 `win` 的地址来源 | 设了就用它；没设才去 `ip -4 addr` 里找。取不到就报错让你去 `.bashrc` / `.zshrc` 里设它 |
+| `WIN_IP` | 非 WSL 上 `win` 的地址来源 | **必须自己设**（`export WIN_IP=<本机对外的地址>`）。本命令**不做 `ip addr` 探测**：阿里云那种机器探到的是内网地址 |
 | `WTOOL_SMB_CONF` | 非 WSL 上 `win` 读哪个 samba 配置 | 默认 `/etc/samba/smb.conf`；测试用它注入假配置，不碰系统文件 |
 | `WRG_SEARCH` | `wrg` 用哪个搜索后端 | `auto`（默认：按 rg → fdfind/fd-find/fd → find 探测）/ `rg` / `fd` / `find`。指定了就必须存在，否则报错返回 2 |
 | `WRG_COLOR` | `wrg` 高亮开关的**默认值** | `auto`（默认：只有 stdout 是终端才上色）/ `always` / `never`。命令行上的 `--color=…` 优先于它；写错返回 2 |
@@ -447,7 +448,7 @@ wrg systemimage -A3
 | `pdd` 报 `cd: ... No such file` | 记下的那个目录已经被删了；`pss` 确认，然后重新 `pwd` 记一次 |
 | `start` 打印 `only wsl support this` 并返回 1 | 不在 WSL 上（没有 `/usr/bin/wslpath`）；`start` 本来就是给 WSL 用的 |
 | `start <TAB>` 不补路径 | 看 shell 里有没有注册：bash `complete -p start`、zsh `print ${_comps[start]}`（应打 `_files`）/ `compctl -L start`（应打 `compctl -f start`）；都没有就是项目没装或没重开 shell |
-| `win: 拿不到本机 IP（WIN_IP 没设，ip addr 里也没有）。` | 非 WSL 上取不到地址。按提示在 `.bashrc` / `.zshrc` 里 `export WIN_IP=<本机对外的地址>` |
+| `win: 没设 WIN_IP（本命令不自动探测 IP …）。` | 非 WSL 上没配地址。在 `.bashrc` / `.zshrc` 里 `export WIN_IP=<本机对外的地址>`（不探测是有意的：服务器上 `ip addr` 给的多半是内网地址） |
 | `win: 读不到 samba 配置 /etc/samba/smb.conf` | 这台机器没装/没配 samba。要么装上并配 `[share]` + `path =`，要么临时 `WTOOL_SMB_CONF=<别的文件>`；scp 那一行照样会给 |
 | `win: /etc/samba/smb.conf 里没有 share 的 path 匹配 <目标>` | 当前目录不在任何 share 的 `path` 下面（或 share 的 path 写的是软链/相对路径）。`testparm` 看一眼 samba 实际认的 path；scp 那一行照样会给 |
 | `win` 在非 WSL 上只打了 scp 一行、返回 1 | 这就是"samba 那半没算出来"，看上面两条的 stderr；scp 行是可以直接用的 |

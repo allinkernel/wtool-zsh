@@ -108,15 +108,11 @@ this_is_not_wsl ()
 # 本机地址：优先 $WIN_IP；取不到就返回 1，由调用方报清楚
 _win_ip ()
 {
-    if [[ -n "${WIN_IP:-}" ]]; then
-        echo "${WIN_IP}"
-        return 0
-    fi
-    command -v ip >/dev/null 2>&1 || return 1
-    ip -4 addr show 2>/dev/null | awk '
-        /^[0-9]+:[[:space:]]/ { iface = $2; sub(/:$/, "", iface); next }
-        iface != "lo" && $1 == "inet" { sub(/\/.*/, "", $2); print $2; exit }
-    '
+    # 只认 $WIN_IP：**不做 ip addr 探测**。
+    # 阿里云那类机器探出来的是内网 / VPC 地址，不是能对外用的地址；
+    # 猜错了比不猜更坏（用户 2026-10-07 要求）。
+    [ -n "${WIN_IP:-}" ] || return 1
+    printf '%s\n' "${WIN_IP}"
 }
 
 # smb.conf 里的 [share] 和 path=，每行一条：share|path
@@ -149,7 +145,7 @@ _win_server ()
 
     ip=$(_win_ip)
     if [[ -z "${ip}" ]]; then
-        echo "win: 拿不到本机 IP（WIN_IP 没设，ip addr 里也没有）。" >&2
+        echo "win: 没设 WIN_IP（本命令不自动探测 IP —— 服务器上探到的常常是内网地址）。" >&2
         echo "     请在 .bashrc/.zshrc 里设 WIN_IP=<本机对外的地址>" >&2
         return 1
     fi

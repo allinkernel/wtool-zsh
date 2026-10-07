@@ -628,3 +628,15 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
   （那 2 条是既有的 `win` share 前缀用例，与本次无关）；两个 shell 行为逐字一致。
 - **可重跑判据**：见 `architecture.md` §4.6 末尾那段 for 循环（bash/zsh 各跑一遍，输出注释里那四行）。
 - **注意**：用户 `.zshrc` 第 41–57 行那两条别名现在**失效**（被 unalias），可以删；不删也不影响。
+
+## ✅ 2026-10-07：`win` 不再自动探测 IP —— 只认 `WIN_IP`
+
+- **需求**（用户原话大意）：`win` 不要自己用 `ip addr` 探测，"像阿里云服务器一样，探测出来的不一定准，
+  就让用户配置 `WIN_IP` 就可以了"。
+- **改法**：`_win_ip` 收缩成"有 `$WIN_IP` 就打印它，否则返回 1"（删掉 `ip -4 addr` 那整段 awk）；
+  `_win_server` 的报错文案同步成 `win: 没设 WIN_IP（本命令不自动探测 IP —— 服务器上探到的常常是内网地址）。`
+- **测试**：删掉"从 ip addr 兜底"那条（它依赖本机网卡，本身就不稳），换成 4 条：
+  `_win_ip` 没设 → rc=1；设了 → 原样打印；`win`（非 WSL）没设 `WIN_IP` → rc=1 且 **stdout 空**；
+  设了 → 两行都在。两 shell 各 4 条。
+- **判据**：`tests/env_test.sh` 全绿（除既有 win share 前缀那 2 条）；
+  `WIN_IP=203.0.113.7 zsh -c '. env.zsh; this_is_wsl(){ return 1; }; win'` → 两行。
