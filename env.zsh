@@ -211,13 +211,16 @@ start ()
 # ---------------------------------------------------------------------------
 # wrg：在当前目录树下按"构建目标名"找 Android.bp / Android.mk / Makefile
 #   wrg <名字>      精确匹配目标名
-#   wrg -i <片段>   模糊匹配（目标名里含这个片段，忽略大小写）
+#   wrg -i <片段>   模糊匹配：枚举所有目标名（三类文件），两边都去掉 _ 再比，查询串
+#                   从尾部逐级截断，用"实际能命中的最长前缀"去匹配（最短试到 4 个字符）
 # 认三类文件：
 #   Android.bp  → name: "xxx"
 #   Android.mk  → LOCAL_MODULE / LOCAL_PACKAGE_NAME
 #   其它 Makefile（Makefile / makefile / GNUmakefile / *.mk（Android.mk 除外）/ *.mak）
 #               → 构建目标名：规则行（^[[:space:]]*目标([[:space:]]+目标)*[[:space:]]*:）
-#                 冒号前那串不含 = $ # 的词，外加 .PHONY: 声明的那些词；一行多个目标逐个算
+#                 冒号前那串不含 = $ # " ' 的词，外加 .PHONY: 声明的那些词；一行多个目标逐个算
+#   以 TAB 开头的行一律不算目标定义（Makefile 的 recipe 必须 TAB 缩进）；
+#   目标列表（冒号前那段）里有引号的也不算 —— @echo "aaa: bbb" 这种是字符串不是目标。
 # 输出：文件:行号:命中行（路径形状与 find 一致带 ./ 前缀，按文件+行号排序；
 #   命中的那一段在终端里高亮，管道/重定向时不着色）
 # 搜索后端：rg → fd（按 fdfind / fd-find / fd 探测）→ find，前一个没有才用下一个。
@@ -228,13 +231,25 @@ start ()
 # ---------------------------------------------------------------------------
 _WRG_FD_GLOB='{Android.bp,Android.mk,Makefile,makefile,GNUmakefile,*.mk,*.mak}'   # fd 的 -g 是"开关"（不带参数），所有文件名合成一个 glob
 
-# 三种后端共用的一段 awk：WRG_PASS=search 扫文件出结果；WRG_PASS=recheck 给 stdin 上的
-# "路径:行号:原文" 做真判命中（rg 那三套正则只是粗筛，判命中一定回到这里）；
-# WRG_PASS=paint 给同一形状的行上色（高亮 = \033[1;31m … \033[0m，只包住命中的那一段）。
-# 判命中 / 抠目标名的逻辑只有这一份，三个后端共用，保证输出一致。
+# 模糊匹配"枚举目标名"用的粗筛正则：不含查询串，把候选行全捞出来交给 awk 抠名字
+# （三条后端各用自己的办法扫文件；rg 这条路要靠它们，正则本身必须是宽的）
+_WRG_RE_BP_NAME='^[[:space:]]*name[[:space:]]*:[[:space:]]*"'
+_WRG_RE_MK_NAME='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*'
+_WRG_RE_MAKE_NAME='^[^=#$:]*:'   # 第一个冒号出现在 = # $ 之前 —— rule_prefix() 认的行一定匹配它
+
+# 三种后端共用的一段 awk：
+#   WRG_PASS=search  扫文件出结果（find / fd 那条路）；
+#   WRG_PASS=recheck 给 stdin 上的 "路径:行号:原文" 做真判命中（rg 那几套正则只是粗筛）；
+#   WRG_PASS=paint   给同一形状的行上色（高亮 = \033[1;31m … \033[0m，只包住命中的那一段）；
+#   WRG_PASS=names   扫文件、WRG_PASS=names3 读 "路径:行号:原文"，两者都只枚举目标名，
+#                    最后打印"查询串去 _ 后能命中的最长前缀"（模糊匹配第一步）。
+# 判命中 / 抠目标名 / 枚举名字的逻辑只有这一份，三个后端共用，保证输出一致。
 _WRG_AWK='BEGIN {
-    pat = ENVIRON["WRG_PAT"]; lpat = tolower(pat); fuzzy = ENVIRON["WRG_FUZZY"] + 0
+    pat = ENVIRON["WRG_PAT"]; fuzzy = ENVIRON["WRG_FUZZY"] + 0
     pass = ENVIRON["WRG_PASS"]
+    npat = key(pat); nplen = length(npat); first = substr(npat, 1, 1)
+    collect = (pass == "names" || pass == "names3")
+    maxlen = 0; hlen = 0
 }
 function norm(p) {
     if (p ~ /^\// || p ~ /^\.\//) return p
@@ -253,10 +268,59 @@ function kind(p,   b) {
     if (b ~ /[.]mk$/ || b ~ /[.]mak$/) return 3
     return 0
 }
-# 这个候选值算不算命中：精确比整个名字，模糊找子串（忽略大小写）
-function hit(val) {
-    if (fuzzy) return index(tolower(val), lpat) - 1
-    return (val == pat) ? 0 : -1
+# 目标名的归一化形式：去掉 _ 再转小写（模糊匹配时查询串和候选名两边都这么归一）
+function key(s,   i, n, c, o) {
+    o = ""; n = length(s)
+    for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c != "_") o = o c
+    }
+    return tolower(o)
+}
+# 这个候选值算不算命中：精确比整个名字；模糊把两边都归一化后找子串。
+# 命中返回"命中段在原串里的 0 基起点"，段长写进全局 hlen
+# （原串里可能夹着 _，高亮要按原串的下标来，所以不能直接用归一化后的长度）
+function hit(val,   nv, p, i, n, c, k, st) {
+    if (!fuzzy) {
+        if (val == pat) { hlen = length(val); return 0 }
+        return -1
+    }
+    if (nplen == 0) return -1
+    nv = key(val)
+    p = index(nv, npat)
+    if (p == 0) return -1
+    k = 0; st = 0; n = length(val)
+    for (i = 1; i <= n; i++) {
+        c = substr(val, i, 1)
+        if (c == "_") continue
+        k++
+        if (k == p) st = i
+        if (k == p + nplen - 1) { hlen = i - st + 1; return st - 1 }
+    }
+    return -1
+}
+# 枚举模式（collect）用：把一个候选目标名和 npat 比"最长公共前缀"，记进 maxlen。
+# 归一化只做"去掉 _ + 转小写"，所以 npat 的前缀出现在某个名字里
+# ⇔ 那个名字里有一段和它逐字相同（这就是"逐级截断"要找的东西）
+function addname(nm,   k, m, i, j, c) {
+    if (nplen == 0 || maxlen >= nplen) return
+    k = key(nm); m = length(k)
+    for (i = 1; i <= m; i++) {
+        if (substr(k, i, 1) != first) continue
+        c = 1
+        for (j = 2; j <= nplen && i + j - 1 <= m; j++) {
+            if (substr(k, i + j - 1, 1) != substr(npat, j, 1)) break
+            c = j
+        }
+        if (c > maxlen) maxlen = c
+        if (maxlen >= nplen) return
+    }
+}
+# 每个候选值都从这儿过：枚举模式只记名字；别的模式判命中（命中写全局 v / vs，一行只认第一个）
+function take(vv, oo) {
+    if (collect) { addname(vv); return 0 }
+    if (hit(vv) >= 0) { v = vv; vs = oo; return 1 }
+    return 0
 }
 # 把 s 按空白切成词：词进全局 W[]，它在"整行"里的起始下标（1 基）进全局 WO[]，
 # 高亮就靠 WO[] 定位。off 是 s 在整行里的 0 基偏移。返回词数。
@@ -272,15 +336,18 @@ function words(s, off,   n, i, c, cnt, start) {
 }
 # 规则行：^[[:space:]]*<目标>([[:space:]]+<目标>)*[[:space:]]*:
 # 返回冒号前那串（含行首空白）；不是规则行返回空串。
-# 目标必须是"不含 = $ # 的词"：扫到这三个字符里的任何一个就否决整行
+# 目标必须是"不含 = $ # 引号 的词"：扫到这几个字符里的任何一个就否决整行
 # （VAR ?= x / VAR = x / ifeq (...) / include $(...) / # 注释 都在这儿挡掉）；
 # 冒号紧跟 = 的是赋值不是规则（VAR := x），::= 也是赋值。
+# 以 TAB 开头的一律否决：Makefile 的 recipe 必须 TAB 缩进，那是命令行不是目标定义。
 function rule_prefix(line,   i, n, c) {
+    if (substr(line, 1, 1) == "\t") return ""
     n = length(line); i = 1
     while (i <= n && substr(line, i, 1) ~ /[[:space:]]/) i++
     while (i <= n) {
         c = substr(line, i, 1)
         if (c == "=" || c == "$" || c == "#") return ""
+        if (c == "\"" || c == "\047") return ""   # 目标列表里不许有引号（@echo "aaa: bbb"）
         if (c == ":") {
             if (substr(line, i + 1, 1) == "=") return ""
             if (substr(line, i + 1, 1) == ":" && substr(line, i + 2, 1) == "=") return ""
@@ -291,15 +358,15 @@ function rule_prefix(line,   i, n, c) {
     return ""
 }
 # Makefile 一行里的候选目标：规则行冒号前那串词，外加 .PHONY: 声明的词
-# （声明部分在 # 注释处截断）。一行里可能有多个目标，挨个试，第一个命中的
-# 写进全局 v / vs 并返回 1。
+# （声明部分在 # 注释处截断）。一行里可能有多个目标，挨个过 take()：
+# 正常模式取第一个命中的（写进全局 v / vs 并返回 1），枚举模式全记下来。
 function cand_make(line,   pre, cnt, i, ph, rest, cut, rn, w) {
     pre = rule_prefix(line)
     if (pre == "") return 0
     ph = 0; cnt = words(pre, 0)
     for (i = 1; i <= cnt; i++) {
         if (W[i] == ".PHONY") ph = 1
-        if (hit(W[i]) >= 0) { v = W[i]; vs = WO[i]; return 1 }
+        if (take(W[i], WO[i])) return 1
     }
     if (!ph) return 0
     rest = substr(line, length(pre) + 2)          # 冒号（在 length(pre)+1）之后
@@ -309,25 +376,26 @@ function cand_make(line,   pre, cnt, i, ph, rest, cut, rn, w) {
     for (i = 1; i <= rn; i++) {
         w = W[i]
         if (w ~ /[$=\\]/) continue                # .PHONY: $(TARGETS) / 续行反斜杠 不算
-        if (hit(w) >= 0) { v = w; vs = WO[i]; return 1 }
+        if (index(w, "\"") > 0 || index(w, "\047") > 0) continue   # 声明词里的引号也不算
+        if (take(w, WO[i])) return 1
     }
     return 0
 }
-function cand_bp(line) {
+function cand_bp(line,   vv) {
+    if (substr(line, 1, 1) == "\t") return 0     # TAB 开头 = recipe / 正文，不是目标定义
     if (match(line, /^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*"/)) {
-        v = substr(line, RSTART, RLENGTH)
-        sub(/^[^"]*"/, "", v); sub(/"[[:space:]]*$/, "", v)
-        vs = RSTART + RLENGTH - 1 - length(v)
-        return (hit(v) >= 0)
+        vv = substr(line, RSTART, RLENGTH)
+        sub(/^[^"]*"/, "", vv); sub(/"[[:space:]]*$/, "", vv)
+        return take(vv, RSTART + RLENGTH - 1 - length(vv))
     }
     return 0
 }
-function cand_mk(line) {
+function cand_mk(line,   vv) {
+    if (substr(line, 1, 1) == "\t") return 0     # TAB 开头 = recipe 正文，不是目标定义
     if (match(line, /^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+/)) {
-        v = substr(line, RSTART, RLENGTH)
-        sub(/^[^=]*=[[:space:]]*/, "", v)
-        vs = RSTART + RLENGTH - length(v)
-        return (hit(v) >= 0)
+        vv = substr(line, RSTART, RLENGTH)
+        sub(/^[^=]*=[[:space:]]*/, "", vv)
+        return take(vv, RSTART + RLENGTH - length(vv))
     }
     return 0
 }
@@ -352,8 +420,7 @@ pass == "paint" {
     if (!cand(fp, ft)) { print; next }
     o = hit(v)
     if (o < 0 || v == "") { print; next }
-    len = fuzzy ? length(pat) : length(v)
-    print fp ":" fl ":" substr(ft, 1, vs - 1 + o) "\033[1;31m" substr(ft, vs + o, len) "\033[0m" substr(ft, vs + o + len)
+    print fp ":" fl ":" substr(ft, 1, vs - 1 + o) "\033[1;31m" substr(ft, vs + o, hlen) "\033[0m" substr(ft, vs + o + hlen)
     next
 }
 pass == "recheck" {
@@ -362,17 +429,29 @@ pass == "recheck" {
     print
     next
 }
+pass == "names3" {
+    if (!split3($0)) next
+    cand(fp, ft)
+    next
+}
 {
+    if (pass == "names") { cand(norm(FILENAME), $0); next }
     p = norm(FILENAME)
     if (!cand(p, $0)) next
     print p ":" FNR ":" $0
+}
+END {
+    if (collect && nplen > 0) {
+        floor = (nplen < 4) ? nplen : 4          # 最短试到 4 个字符；查询本身更短就整个试
+        if (maxlen >= floor) print substr(npat, 1, maxlen)
+    }
 }
 '
 
 _wrg_usage ()
 {
     echo "Usage: wrg <名字>        # 精确匹配目标名"
-    echo "       wrg -i <片段>     # 模糊匹配（子串、忽略大小写）"
+    echo "       wrg -i <片段>     # 模糊匹配：去 _ 、从尾部逐级截断，用能命中的最长前缀找"
 }
 
 # 挑搜索后端：打印要用的可执行名（find 就是字面量 find）。
@@ -417,6 +496,51 @@ _wrg_re_escape ()
           printf "%s", out }'
 }
 
+# 模糊匹配"粗筛"用的正则：归一化（去 _）之后含这段前缀 ⇔ 原文本里这些字符按顺序出现、
+# 中间只夹着 _。所以每个字符后面都挂一个 "_*"，整段 (?i:...) 忽略大小写。
+# 判命中仍在 awk 里（它按归一化后的名字算），这条只是让 rg 少吐几行。
+_wrg_re_us ()
+{
+    printf '%s' "${1}" | awk '
+        { out = ""; n = length($0)
+          for (i = 1; i <= n; i++) {
+              c = substr($0, i, 1)
+              if (index("\\^$.*+?()[]{}|", c) > 0) out = out "\\"
+              out = out c "_*"
+          }
+          printf "(?i:%s)", out }'
+}
+
+# 查询串的归一化形式：去掉 _ 再转小写（和 awk 里 key() 一个口径）
+_wrg_norm ()
+{
+    printf '%s' "${1}" | tr -d '_' | tr 'A-Z' 'a-z'
+}
+
+# 模糊匹配第一步：枚举三类文件里的**所有目标名**（用和搜索同一个后端，每次都重扫当前
+# 目录、不缓存），把查询串去 _ 后从尾部逐级截断，打印"实际能命中的最长前缀"；
+# 短于 4 个字符不再往下截（查询本身不足 4 个字符就整个试）；一个都没命中就什么都不打印。
+_wrg_prefix ()
+{
+    local tool=$1 pat=$2 pfx
+    case "${tool}" in
+    rg)
+        pfx=$( { "${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${_WRG_RE_BP_NAME}" . 2>/dev/null
+                 "${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${_WRG_RE_MK_NAME}" . 2>/dev/null
+                 "${tool}" --no-heading --line-number --with-filename --color=never --type amake --type make -g '!Android.bp' -g '!Android.mk' -e "${_WRG_RE_MAKE_NAME}" . 2>/dev/null
+               } | WRG_PAT="${pat}" WRG_PASS=names3 awk "${_WRG_AWK}" ) ;;
+    find)
+        pfx=$(WRG_PAT="${pat}" WRG_PASS=names \
+            find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) \
+            -exec awk "${_WRG_AWK}" {} + 2>/dev/null) ;;
+    *)
+        pfx=$(WRG_PAT="${pat}" WRG_PASS=names \
+            "${tool}" -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}" 2>/dev/null) ;;
+    esac
+    # find -exec {} + / fd -X 会按命令行长度分批，每批各打印一行 → 取最长的那一行
+    printf '%s\n' "${pfx}" | awk 'length($0) > length(m) { m = $0 } END { if (m != "") print m }'
+}
+
 # 要不要上色：WRG_COLOR=auto（默认，只有 stdout 是终端才上色）/ always / never；
 # NO_COLOR 非空时一律不上色（优先级最高）。返回 0 上色 / 1 不上色 / 2 取值不认（已报错）。
 _wrg_color ()
@@ -435,7 +559,7 @@ _wrg_color ()
 
 wrg ()
 {
-    local fuzzy=0 pat out rc tool errname brc color crc esc o1 o2 o3 r1 r2 r3 re_bp re_mk re_make
+    local fuzzy=0 pat spat out rc tool errname brc color crc esc us pfx o1 o2 o3 r1 r2 r3 re_bp re_mk re_make
     case "${1:-}" in
         -h|--help) _wrg_usage; return 0 ;;
         -i)        fuzzy=1; shift ;;
@@ -455,17 +579,54 @@ wrg ()
     if [[ ${crc} -eq 2 ]]; then return 2; fi
     if [[ ${crc} -eq 0 ]]; then color=1; fi
 
+    # 先看树里有没有这三类文件，没有就没必要往下走
     case "${tool}" in
     rg)
         errname="${tool}"
-        # 先看树里有没有这三类文件（rg --files 只看文件名，和后面的搜索遵守同一套 ignore 规则）
+        # rg --files 只看文件名，和后面的搜索遵守同一套 ignore 规则
         if [[ -z "$("${tool}" --files -g Android.bp -g Android.mk -g Makefile -g makefile -g GNUmakefile -g '*.mk' -g '*.mak' . 2>/dev/null | head -n 1)" ]]; then
             echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
             return 1
         fi
+        ;;
+    find)
+        errname="find/awk"
+        if [[ -z "$(find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) -print -quit 2>/dev/null)" ]]; then
+            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
+            return 1
+        fi
+        ;;
+    *)
+        errname="${tool}/awk"
+        if [[ -z "$("${tool}" -t f -g "${_WRG_FD_GLOB}" 2>/dev/null | head -n 1)" ]]; then
+            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
+            return 1
+        fi
+        ;;
+    esac
+
+    # 模糊匹配：先枚举目标名、算出"实际匹配"的前缀，再用它去搜。
+    # 只有"实际匹配"和用户输入（去 _ 之后）不一样时才打表头，正常命中保持干净输出。
+    spat="${pat}"
+    if [[ ${fuzzy} -eq 1 ]]; then
+        pfx=$(_wrg_prefix "${tool}" "${pat}")
+        if [[ -z "${pfx}" ]]; then
+            echo "wrg: 没有匹配 '${pat}' 的目标名" >&2
+            return 1
+        fi
+        if [[ "${pfx}" != "$(_wrg_norm "${pat}")" ]]; then
+            printf '用户输入%s\n' "${pat}"
+            printf '实际匹配%s\n' "${pfx}"
+            printf '匹配目标名如下：\n'
+        fi
+        spat="${pfx}"
+    fi
+
+    case "${tool}" in
+    rg)
         # 三类文件的写法不一样 → 各搜一次再合并；值要做正则转义，
         # 关键词那部分的大小写要敏感（模糊只对值用 (?i:...)）
-        esc=$(_wrg_re_escape "${pat}")
+        esc=$(_wrg_re_escape "${spat}")
         if [[ ${fuzzy} -eq 0 ]]; then
             re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"${esc}\""
             re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*'"${esc}"'([[:space:]#]|$)'
@@ -473,9 +634,10 @@ wrg ()
         else
             # 模糊：只让"值"那一段忽略大小写（(?i:...)），关键词仍旧大小写敏感；
             # Makefile 那套不能加词边界 —— -i system 得能命中 vbmetasystemimage 这种
-            re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"[^\"]*(?i:${esc})[^\"]*\""
-            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]*(?i:'"${esc}"')'
-            re_make="(?i:${esc})"
+            us=$(_wrg_re_us "${spat}")
+            re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"[^\"]*${us}[^\"]*\""
+            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]*'"${us}"
+            re_make="${us}"
         fi
         o1=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${re_bp}" . 2>/dev/null); r1=$?
         o2=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${re_mk}" . 2>/dev/null); r2=$?
@@ -489,25 +651,15 @@ wrg ()
         # 三套正则只是"粗筛"（Makefile 那套尤其松）：真判命中回到共用的 awk（recheck），
         # 三条后端 + 两个 shell 的输出才逐字一致
         out=$(printf '%s\n%s\n%s' "${o1}" "${o2}" "${o3}" | \
-            WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=recheck awk "${_WRG_AWK}")
+            WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=recheck awk "${_WRG_AWK}")
         ;;
     find)
-        errname="find/awk"
-        if [[ -z "$(find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) -print -quit 2>/dev/null)" ]]; then
-            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
-            return 1
-        fi
-        out=$(WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
+        out=$(WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
             find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) -exec awk "${_WRG_AWK}" {} + 2>/dev/null)
         rc=$?
         ;;
     *)
-        errname="${tool}/awk"
-        if [[ -z "$("${tool}" -t f -g "${_WRG_FD_GLOB}" 2>/dev/null | head -n 1)" ]]; then
-            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
-            return 1
-        fi
-        out=$(WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
+        out=$(WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
             "${tool}" -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}" 2>/dev/null)
         rc=$?
         # fd 没命中时的退出码各版本不一样（9.0.0 给 0，有的给 1）：空输出 + 1 当"没命中"
@@ -524,9 +676,10 @@ wrg ()
         return 1
     fi
     # 先按纯文本排序，再（只在终端上）过一遍着色，ANSI 不会污染排序键
+    # （着色也用 spat：模糊时高亮的是"实际匹配"的那段前缀）
     if [[ ${color} -eq 1 ]]; then
         printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n | \
-            WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=paint awk "${_WRG_AWK}"
+            WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=paint awk "${_WRG_AWK}"
     else
         printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n
     fi

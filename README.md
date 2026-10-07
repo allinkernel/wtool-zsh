@@ -193,12 +193,35 @@ start code         # 在 Windows 侧启动 VS Code
 |---|---|
 | `Android.bp` | `name: "xxx"` |
 | `Android.mk` | `LOCAL_MODULE := xxx` / `LOCAL_PACKAGE_NAME := xxx`（`:=` 或 `=`，行首可以有空白） |
-| 其它 Makefile：`Makefile` / `makefile` / `GNUmakefile` / `*.mk`（`Android.mk` 除外）/ `*.mak` | **构建目标名**：规则行 `目标 目标: 依赖` 冒号前那串词（不含 `=` `$` `#`），外加 `.PHONY: 目标 …` 声明的那些词 —— 一行里有多个目标就逐个算 |
+| 其它 Makefile：`Makefile` / `makefile` / `GNUmakefile` / `*.mk`（`Android.mk` 除外）/ `*.mak` | **构建目标名**：规则行 `目标 目标: 依赖` 冒号前那串词（不含 `=` `$` `#` `"` `'`），外加 `.PHONY: 目标 …` 声明的那些词 —— 一行里有多个目标就逐个算；**以 TAB 开头的行不算**（Makefile 的 recipe 必须 TAB 缩进，那是命令行不是目标定义） |
 
 | 用法 | 匹配方式 |
 |---|---|
 | `wrg libfoo` | **精确**：目标名和 `libfoo` 完全相同（区分大小写） |
-| `wrg -i lib` | **模糊**：目标名里含 `lib`（子串、忽略大小写） |
+| `wrg -i vbmetasystmmm` | **模糊**：目标名与查询串**都去掉 `_`**、忽略大小写地比；查询串**从尾部逐级截断**，用实际能命中的最长前缀去匹配（最短试到 4 个字符） |
+
+**模糊匹配（`-i`）到底怎么算**（四步，每次运行都重扫当前目录，不缓存）：
+
+1. **枚举目标名**：先把三类文件里的**所有目标名**取出来（用和搜索同一个后端）；
+2. **归一化**：查询串和候选目标名**都去掉 `_`**、都转小写；
+3. **逐级截断**：先拿整个查询串去比，没有命中就去掉最后一个字符再比，
+   一直试到命中或只剩 **4 个字符**（查询本身不足 4 个字符就整个试）——
+   记下**实际匹配用的那个前缀**；
+4. **输出**：实际匹配的前缀和"用户输入去掉 `_` 之后"**不一样**时，先打三行表头
+   （措辞固定，第一行照抄用户输入、带原来的 `_`），再打命中行；正常命中不加表头。
+
+```sh
+wrg -i vbmeta_systmmm
+# 用户输入vbmeta_systmmm
+# 实际匹配vbmetasyst
+# 匹配目标名如下：
+# ./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage
+# ./build/make/core/main.mk:1384:vbmetasystemimage: $(INSTALLED_VBMETA_SYSTEMIMAGE_TARGET)
+```
+
+> 逐级截断只从**尾部**去掉字符：`vbmeta_systmmm`（故意写错尾巴）能命中 `vbmetasystemimage`，
+> 但开头写错就没办法了。`_` 不算数：`wrg -i vbmeta_system` 和 `wrg -i vbmetasystem`
+> 是同一个键，`system_image_defaults` 这种带 `_` 的名字也照样命中。
 
 **搜索后端**（按顺序探测，前一个没有才用下一个）：
 
@@ -235,6 +258,13 @@ wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标�
                      # ./foo/Android.mk:8:LOCAL_PACKAGE_NAME := FooApp
 wrg systemimage      # ./build/make/core/Makefile:924:.PHONY: systemimage
                      # ./build/make/core/Makefile:925:systemimage:  ← systemimage 标红加粗
+wrg -i vbmeta_systmmm
+                     # 用户输入vbmeta_systmmm
+                     # 实际匹配vbmetasyst
+                     # 匹配目标名如下：
+                     # ./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage
+                     # ./build/make/core/main.mk:1384:vbmetasystemimage: …
+                     #                          ↑ 只有 vbmetasyst 这 10 个字符标红
 ```
 
 > 注释里的目标名（`# LOCAL_MODULE := xxx`）不算；精确匹配不认前缀
@@ -245,6 +275,18 @@ wrg systemimage      # ./build/make/core/Makefile:924:.PHONY: systemimage
 > `ifeq (...)` / `include $(...)` 这种带 `$` 的行、`$(MKTARGET): dep` 这种目标里带 `$` 的规则行、
 > `# 注释: 里的冒号`。`Android.mk` 只按 `LOCAL_MODULE` / `LOCAL_PACKAGE_NAME` 认，
 > 它里面的规则行**不算**（否则同一个目标会被两套语义各算一遍）。
+>
+> **recipe 行与字符串也不算**（这条是 2026-10-07 修的假阳性，真 AOSP 上撞到过）：
+> 以 **TAB 开头**的行一律不算（Makefile 的 recipe 必须 TAB 缩进），
+> 目标列表（冒号前那段）里出现 **`"` / `'`** 的也不算 ——
+> 所以 `	@echo "Target system fs image: $(1)"` 和空格缩进的
+> `  @echo "Install system fs image: $@"` 都不会再被当成定义了 `system` 这个目标
+> （前者靠 TAB、后者靠引号；两行都照抄自 `build/make/core/Makefile`）。
+> **已知残留**：`$(error ...)` / `$(warning ...)` 这种跨行字符串的**续行**里如果是一句
+> 散文（例：`     Prebuilt apk found in PRODUCT_COPY_FILES: $(1), …`），
+> 里面的 `apk` / `found` 这类词仍会被当成目标名 —— 要挡掉它得知道"上一行是不是续行"，
+> 而 `rg` 那条路是**按行**拿结果的、看不到上一行，加了这条规则三条后端就对不齐了
+> （真 AOSP 实测：`wrg apk` 会命中那一行；`reportmissinglicenses` 这种真目标不受影响）。
 
 ---
 
@@ -304,7 +346,11 @@ wrg systemimage      # ./build/make/core/Makefile:924:.PHONY: systemimage
 | `win` 在非 WSL 上只打了 scp 一行、返回 1 | 这就是"samba 那半没算出来"，看上面两条的 stderr；scp 行是可以直接用的 |
 | `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`（返回码 1） | 站错目录了（`wrg` 只看当前目录往下）；`cd` 到源码树根部再跑。用 rg / fd 时它们跳过的目录（`.repo/`、`out/`）里即使有也不算。只有 `Makefile.am` / `Makefile.in` 的树也算"没有"（它们不在文件集合里） |
 | `wrg: 没有匹配 'xxx' 的目标名`（返回码 1） | 精确模式要求名字完全一样（区分大小写）；想按片段找就 `wrg -i 片段`。Makefile 里只认**目标名**：赋值（`VAR := x`）、`ifeq`、依赖列表里的名字都不算 |
+| `wrg -i` 打出了 `用户输入… / 实际匹配… / 匹配目标名如下：` 三行 | 这是**有意**的：查询串从尾部截断过（实际匹配的前缀比你输入的去 `_` 版本短），告诉你它到底拿什么去搜的。正常命中不带这三行 |
+| `wrg -i` 明明"看着像"却报没有匹配 | 只会从**尾部**截断，最短试到 4 个字符：`vbmzzzzzz` 只剩 `vbm`（3 个字符）就不再往下试了。开头/中间写错救不了，换个写法或者用精确匹配 |
+| `wrg -i` 命中了一堆不相干的名字 | 模糊匹配是"归一化后**含**这个前缀"，前缀越短命中越多；表头第三行下面按路径+行号排，用 `grep` 再筛一道 |
 | `wrg` 在 Makefile 里搜 `systemimage_intermediates` 没结果 | 它多半是**变量**（`systemimage_intermediates :=$= …`）而不是目标 —— 赋值按规则就不算目标名 |
+| `wrg apk` 命中了 `Prebuilt apk found in PRODUCT_COPY_FILES: …` | 已知残留的假阳性：那是 `$(error …)` 跨行字符串的续行，按行看不出它是散文（详见上面「recipe 行与字符串也不算」那段）。真目标名（如 `reportmissinglicenses`）不受影响 |
 | `wrg` 搜不到 `.repo/` 或 `out/` 里的目标 | 默认后端是 rg / fd，它们跳过隐藏目录与被 ignore 的目录。要连这些一起搜：`WRG_SEARCH=find wrg 名字` |
 | `wrg: WRG_SEARCH=rg 但 PATH 里没有 rg`（返回码 2） | 强制指定了 `rg` 却装没装/不在 PATH 里。装 ripgrep，或者 `WRG_SEARCH=auto` 让它自己挑 |
 | `wrg: WRG_SEARCH=fd 但 PATH 里没有 fdfind / fd-find / fd`（返回码 2） | 同上：装 `fd-find`（Ubuntu 里可执行名是 `fdfind`），或改回 `auto` |
@@ -317,10 +363,15 @@ wrg systemimage      # ./build/make/core/Makefile:924:.PHONY: systemimage
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # rg + fd 都装了：199 条；只有 rg：185；只有 fd：179；
-                           # 两个都没有（纯 find 兜底）：161 —— 以输出为准
+bash tests/env_test.sh     # rg + fd 都装了：277 通过 / 2 失败（那 2 条是 win 的老毛病，见下）；
+                           # 只有 rg：259；只有 fd：253；两个都没有（纯 find 兜底）：229
+                           # —— 都带同样的 2 条失败，以输出为准
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
+
+> ⚠️ 本机（WSL）上 `win | head -1` 那两条会因为 `head` 提前关掉管道、`echo` 报
+> `write error: Broken pipe` 而 FAIL（**和 wrg 无关、改动前就在**）；容器里
+> （`wrg-test`，非 WSL、没有 `ip`）同一份用例是 **275 通过 / 0 失败**。
 
 它把**同一张用例表**喂给两个 shell：别名在不在、`_up_to_have_dir` / `cw` 能不能找到
 `.repo`、`pdd`/`pss` 能不能跳回来、`start` 的补全注册、`win` 的 WSL 分支**逐字等于**
@@ -330,12 +381,19 @@ bash tests/env_test.sh     # rg + fd 都装了：199 条；只有 rg：185；只
 
 `wrg` 那一段是重点：老行为（精确/模糊/注释/空目录/用法）之外，还比
 **三条后端在同一个夹具上的输出逐字一致**（`WRG_SEARCH=auto|fd|rg` vs `find`，`cmp` 比对，
-模糊 + 精确两种模式）、元字符当字面量（`liba+b` 不命中 `libaaab`）、每条后端的
+精确 + 模糊两种模式，模糊那条还带"截断表头"）、元字符当字面量（`liba+b` 不命中 `libaaab`，
+`-i 'libc.d'` 不命中 `libcxd`）、每条后端的
 "没有命中 / 树下没有这三类文件 / 只有 `Makefile.am` 也算没有 / 只有 `Makefile` 也搜得到"、
 后端探测顺序（用只有一个可执行名的假 `PATH`）、
 强制指定但可执行不存在（rc=2）、高亮（管道里 `grep -c ESC` = 0、`WRG_COLOR=always` 的
-精确字节、`NO_COLOR` 压过 `always`、pty 下自动上色）、以及"隐藏目录里 rg/fd 搜不到、
-find 搜得到"这条语义差异。
+精确字节、模糊只包住"实际匹配"的那一段、`NO_COLOR` 压过 `always`、pty 下自动上色）、
+以及"隐藏目录里 rg/fd 搜不到、find 搜得到"这条语义差异；
+再加两组 2026-10-07 新钉的：**假阳性**（`$T/src4`：TAB/空格缩进的 recipe、`define` 体、
+`$(info …)`、注释、`VAR :=`、`export A :=`、TAB 缩进的目标形状行 —— 每条都精确 + 模糊
+各断言一遍"不命中"，同时断言真目标照旧命中、输出里 `grep -c '@echo'` = 0）和
+**新模糊算法**（`$T/src5`：截断到 `vbmetasyst` 的三行表头逐字、表头第一行保留用户写的 `_`、
+`_` 归一等价、正常命中不打表头、下界 4（`vbmzzzzzz` 不命中、`vbme` 命中）、
+`vbm` 这种不足 4 个字符的查询整个试、结果与三后端 `cmp` 一致）。
 
 > 用例表是共用的，**每加一条两个 shell 都会跑**；后端相关的用例按"本机有没有那个
 > 可执行文件"跳过，所以数字会随环境变 —— 以脚本最后打印的那一行为准

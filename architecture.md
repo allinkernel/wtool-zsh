@@ -71,7 +71,9 @@
 | `start <程序>` | 非 WSL 打 `only wsl support this` 返回 1；WSL 上 `powershell.exe -Command "Set-Location -Path \"$(win)\"; Start-Process $1"` | 0 / 1 |
 | `wrg <名字>` / `wrg -i <片段>` | 见 4.5 | 0 / 1 / 2 |
 
-内部辅助（不打算给人直接敲）：`_win_ip`、`_win_smb_shares`、`_win_server`、`_wrg_usage`。
+内部辅助（不打算给人直接敲）：`_win_ip`、`_win_smb_shares`、`_win_server`、
+`_wrg_usage`、`_wrg_backend`、`_wrg_color`、`_wrg_re_escape`、`_wrg_re_us`、
+`_wrg_norm`、`_wrg_prefix`。
 
 ### 4.4 `win` 的服务器分支
 
@@ -95,8 +97,8 @@
 
 ### 4.5 `wrg`
 
-`wrg` 在当前目录树下按**构建目标名**找三类文件（4.5.1）。`-i` 切到模糊模式
-（子串、忽略大小写），否则精确（`==`）。三种搜索后端，**按顺序探测**，前一个没有才用下一个：
+`wrg` 在当前目录树下按**构建目标名**找三类文件（4.5.1）。`-i` 切到模糊模式（4.5.3），
+否则精确（`==`）。三种搜索后端，**按顺序探测**，前一个没有才用下一个：
 
 | 顺序 | 后端 | 怎么找到它 | 怎么搜 |
 |---|---|---|---|
@@ -107,24 +109,33 @@
 - 后端选择：`WRG_SEARCH=auto`（默认，按上表探测）/ `rg` / `fd` / `find`。
   **指定了就一定用它**：`rg` / `fd` 找不到可执行文件 → stderr 报错、返回 **2**；
   取值不认 → 同样 2。`WRG_SEARCH` 只在 `wrg` 里读，不影响别的命令。
-- 判命中、抠目标名、着色都在**同一段 awk**（`_WRG_AWK`，两处 `wrg` 的实现里各存一份、逐字相同）里，
-  三条后端共用，输出因此逐字一致：
-  - `WRG_PASS=search`：读文件，按 4.5.1 的规则取候选目标名；命中
-    （精确 `v == pat`，模糊 `index(tolower(v), tolower(pat)) > 0`）就 `print 路径 ":" FNR ":" $0`；
+- 判命中、抠目标名、枚举目标名、着色都在**同一段 awk**（`_WRG_AWK`，两处 `wrg` 的实现里
+  各存一份、逐字相同）里，三条后端共用，输出因此逐字一致：
+  - `WRG_PASS=search`：读文件，按 4.5.1 的规则取候选目标名；命中就
+    `print 路径 ":" FNR ":" $0`；
   - `WRG_PASS=recheck`：读 stdin 上的 `路径:行号:原文`，用同一套规则**重新判一遍**
-    ——rg 的三套正则只是"粗筛"，最终判命中一定回到这里，所以三条后端不会各说各话；
+    ——rg 的几套正则只是"粗筛"，最终判命中一定回到这里，所以三条后端不会各说各话；
   - `WRG_PASS=paint`：读同样形状的行，把命中的那一段包上颜色（见 4.5.2）；
+  - `WRG_PASS=names`（读文件）/ `WRG_PASS=names3`（读 `路径:行号:原文`）：**只枚举**目标名
+    （`take()` 进收集分支），`END` 里打印"实际匹配的前缀"（见 4.5.3）；
   - 路径归一化：`norm()` 给"既不是 `/` 开头、也不是 `./` 开头"的路径补 `./`
     （fd 直接打印时没有 `./`，加了 `-X` 才有；find 一直有 —— 归一化保证两条路形状一样）。
-- **rg 那条路**：三类文件各一次，值先做正则转义
-  （`_wrg_re_escape`：把 `\ ^ $ . * + ? ( ) [ ] { } |` 变字面量）：
+- **先查有没有可搜文件**（这一步在枚举目标名之前，模糊/精确都一样）：
+  rg 用 `rg --files -g Android.bp -g Android.mk -g Makefile -g makefile -g GNUmakefile
+  -g '*.mk' -g '*.mak' .`；fd 用 `<fd> -t f -g "${_WRG_FD_GLOB}" | head -n 1`；
+  find 用同样的 `-name` 列表 + `-print -quit`。空 → stderr
+  `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`，返回 1
+  （`Makefile.am` / `Makefile.in` 不在集合里，只有它们的树算"没有可搜文件"）；
+- **rg 那条路**：三类文件各一次，查询串先做正则转义
+  （`_wrg_re_escape`：把 `\ ^ $ . * + ? ( ) [ ] { } |` 变字面量），模糊时用 `_wrg_re_us` 换一套
+  （见 4.5.3）：
   - `Android.bp`：`-g Android.bp` + `^[[:space:]]*name[[:space:]]*:[[:space:]]*"…"`；
   - `Android.mk`：`-g Android.mk` + `^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)…`，
     精确模式值后面必须跟 `([[:space:]#]|$)`；
   - 其它 Makefile：`--type amake --type make -g '!Android.bp' -g '!Android.mk'`
     （`amake` = `*.bp` / `*.mk`，`make` = `Makefile` / `*.mk` / `*.mak` 那一族；两套类型都会捎上
     Android 那两个文件，用 `!` glob 排掉，免得被 Makefile 语义再算一遍），粗筛正则 =
-    精确 `(^|[^[:alnum:]_])<值>([^[:alnum:]_]|$)`、模糊 `(?i:<值>)`
+    精确 `(^|[^[:alnum:]_])<值>([^[:alnum:]_]|$)`、模糊 `_wrg_re_us` 的结果
     ——模糊那条**不能加词边界**（`-i system` 要能命中 `vbmetasystemimage`）；
   - 模糊模式只给"值"那段套 `(?i:...)`，关键词部分保持大小写敏感；rg 的退出码：
     **1 = 没命中**（不是错误），> 1 才是错（三次里任意一次 > 1 就整体按错报）。
@@ -133,18 +144,19 @@
   fd 没命中时的退出码各版本不一样（9.0.0 给 0，有的给 1），实现里"空输出 + 1"当没命中。
 - **语义差异**（rg / fd 与 find 的）：rg / fd 默认**跳过隐藏目录和被 ignore 的目录**
   （`.repo/`、`out/` 这类），find 不跳 —— 所以整树更快，但那些目录里的目标搜不到。
-  要连它们一起搜就用 `WRG_SEARCH=find`。
-- 先看树里有没有这三类文件（rg：`rg --files -g Android.bp -g Android.mk -g Makefile
-  -g makefile -g GNUmakefile -g '*.mk' -g '*.mak' .`；fd：`<fd> -t f -g "${_WRG_FD_GLOB}" | head -n 1`；
-  find：同样的 `-name` 列表 + `-print -quit`）：空 → stderr
-  `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`，返回 1
-  （`Makefile.am` / `Makefile.in` 不在集合里，只有它们的树算"没有可搜文件"）；
+  要连它们一起搜就用 `WRG_SEARCH=find`。模糊模式下这条差异还会影响**枚举**：
+  隐藏目录里有个更长的匹配名字时，`find` 会选出更长（更贴）的前缀，
+  rg / fd 看不到它 —— 树里没有隐藏目录时三者逐字一致。
 - 结果先 `sort -t: -k1,1 -k2,2n`（**纯文本**，ANSI 不参与排序键），
   要上色时再过一个 `WRG_PASS=paint` 的 awk；
-- 输出非空就打印、返回 0；空 → stderr `wrg: 没有匹配 '<模式>' 的目标名`，返回 1；
+- 输出非空就打印、返回 0；空 → stderr `wrg: 没有匹配 '<模式>' 的目标名`，返回 1
+  （**消息里用的始终是用户输入的原串**，不是截断后的前缀）；
   后端非 0 → stderr `wrg: 搜索失败（<后端>/awk 退出码 <n>）`，返回 1
   （find 那条路是 `find/awk`，rg 那条路是 `rg`，fd 那条路是 `<fd>/awk`）；
 - 用法错误（选项不认、参数不是 1 个）→ 用法打 stderr，返回 2；`-h` / `--help` → 打 stdout，返回 0。
+- 模糊模式**不检查枚举那一步的退出码**（那一步的输出只用来定前缀；真出错时后面那次搜索
+  照样会报）。`bash` / `zsh` 取管道退出码的写法不一样（`PIPESTATUS` vs `pipestatus`），
+  为了两份逐字等价就不取了。
 
 #### 4.5.1 认哪些文件、值是什么
 
@@ -156,14 +168,20 @@
 | 2 | `Android.mk` | `LOCAL_MODULE` / `LOCAL_PACKAGE_NAME` 等号右边第一个词 | `^[[:space:]]*(LOCAL_MODULE\|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+` |
 | 3 | 其它 Makefile：`Makefile` / `makefile` / `GNUmakefile` / `*.mk`（`Android.mk` 除外）/ `*.mak` | 规则行冒号前那串**词**，外加 `.PHONY:` 声明的词 | 见下（`rule_prefix()` + `cand_make()`） |
 
+**三类文件共用两条否决规则**（`cand_bp` / `cand_mk` / `rule_prefix` 里各有一份）：
+
+1. **行首是 TAB** → 不是目标定义（Makefile 的 recipe 必须 TAB 缩进；`Android.bp` /
+   `Android.mk` 也照这条办 —— 真 AOSP 实测没有 TAB 缩进的 `name:` / `LOCAL_MODULE`）；
+2. 类别 3 另有：**冒号前那段里有 `"` 或 `'`** → 整行否决（`@echo "Target …: …"` 这种字符串）。
+
 类别 3 的判定（一行可能给出**多个**候选，按顺序挨个试，**取第一个命中的**——
 所以一行只输出一次、高亮也只包第一个命中的那个词）：
 
 1. **规则行**：`^[[:space:]]*<目标>([[:space:]]+<目标>)*[[:space:]]*:` ——
    冒号是**扫到的第一个** `:`，且它后面不紧跟 `=`（`:=`）也不是 `::=`；
-   扫到 `=`、`$`、`#` 里的任何一个就**否决整行**（这三个字符不许出现在目标里）；
+   扫到 `=`、`$`、`#`、`"`、`'` 里的任何一个就**否决整行**；
 2. **`.PHONY:` 声明行**：第 1 步认出来的规则词里如果有 `.PHONY`，那么冒号之后、
-   第一个 `#` 之前的那串词**也是**目标（词里含 `$`、`=`、`\` 的跳过）。
+   第一个 `#` 之前的那串词**也是**目标（词里含 `$`、`=`、`\`、`"`、`'` 的跳过）。
 
 **正例**（都算目标名）：`mkrule:`、`mkrule2 mkrule3: $(deps)`（`mkrule2` 和 `mkrule3` 都算）、
 `.PHONY: mkphony1 mkphony2`（两个都算；`.PHONY` 本身是规则词所以也算）、
@@ -181,13 +199,33 @@
 | `# mkcommented: x` | 扫到 `#`，注释行 |
 | `.PHONY: $(TARGETS)` | 声明部分里含 `$` 的词跳过 |
 | `Android.mk` 里的 `mkandroidrule:` | `Android.mk` 只走类别 2，规则行不算（不然会和类别 3 重复计入） |
+| `\t@echo "Target system fs image: $(1)"`（TAB 开头） | 行首 TAB = recipe 行；引号那条也够否决它 |
+| `  @echo "Install system fs image: $@"`（空格缩进、在 `define` 体内） | 冒号前有 `"`（TAB 那条管不着它，真 AOSP 的 3514 行就是这种） |
+| `\tfpztabtarget: $(X)` | 行首 TAB（这条只有 TAB 规则能挡） |
+| `$(info fpzinfo: $(FPZ_DEPS))` | 扫到 `$` |
+| `define fpzdefine` / `endef` | 没有冒号 |
+
+**已知残留**（2026-10-07 实测，**没修**）：`$(error ...)` / `$(warning ...)` 这种跨行字符串的
+**续行**如果是一句散文，里面的词还是会被当成目标名。真 AOSP 上的例子：
+
+```make
+  $(if $(filter %.apk, $(2)),$(error \
+     Prebuilt apk found in PRODUCT_COPY_FILES: $(1), use BUILD_PREBUILT instead!))) \
+```
+
+`wrg apk` 会命中第二行（`Prebuilt` / `apk` / `found` / `in` 都成了"目标"）。
+要挡掉它得知道"上一行是不是续行"（或做括号配对），而 **rg 那条路是按行拿结果的**
+（`recheck` 只看到 rg 筛出来的那些行），加上这条规则三条后端就对不齐了；
+试过的替代规则又都会误伤真目标（见 `BACKLOG.md` 那一轮）。
 
 #### 4.5.2 `wrg` 的高亮
 
 命中的**那一段**（不是整行）用 `\033[1;31m` … `\033[0m` 包住：精确 = 整个目标名；
-模糊 = 目标名里命中的那个子串（`index()` 定位 + `length(pat)` 定长）。
+模糊 = 实际匹配的那个前缀在**原文**里覆盖的那一段（`hit()` 把归一化后的下标映射回原串，
+所以 `vbmeta_system_other` 里 `vbmetasyst` 会连中间的 `_` 一起包住）。
 候选词在整行里的起始下标由 `words()` 记进 `WO[]`，着色按它定位
-（`Android.bp` 是"引号里那段"、`Android.mk` 是"等号后那段"、Makefile 是"命中的那个词"）。
+（`Android.bp` 是"引号里那段"、`Android.mk` 是"等号后那段"、Makefile 是"命中的那个词"），
+包住的长度由 `hit()` 写进全局 `hlen`。
 
 | 变量 | 作用 |
 |---|---|
@@ -197,7 +235,39 @@
 | `WRG_COLOR` 取值不认 | stderr 报错，返回 2（和 `WRG_SEARCH` 一样，拼错不静默） |
 
 内部变量（不是给人设的）：`WRG_PAT` / `WRG_FUZZY` / `WRG_PASS`（传给 awk 的模式、模式开关、
-pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glob）。
+pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glob）、
+`_WRG_RE_BP_NAME` / `_WRG_RE_MK_NAME` / `_WRG_RE_MAKE_NAME`（模糊枚举那一步的粗筛正则）。
+
+#### 4.5.3 `wrg -i` 的模糊匹配（2026-10-07 改）
+
+`wrg` 搜的是 **AOSP 目标名**，所以模糊匹配按"**先去 `_`，再从尾部逐级截断，用前缀去匹配**"：
+
+1. **枚举目标名**（`_wrg_prefix` → awk 的 `WRG_PASS=names` / `names3`）：
+   把三类文件里的**所有**目标名抠出来（4.5.1 的规则，一次扫完），用**和搜索同一个后端**
+   （`auto` 下就是 rg），**每次都重扫当前目录、不缓存**；
+   `find -exec … {} +` 和 `fd -X` 会按命令行长度**分批**，每批各打印一行，
+   shell 侧再取最长的那行（`printf … | awk 'length($0) > length(m) { m = $0 } …'`）；
+2. **归一化**：`key()` = 去掉 `_` + 转小写，查询串和候选名两边都过它；
+3. **逐级截断**：`addname()` 对每个名字算"和 `npat` 的最长公共前缀"（在每个位置上比），
+   取全局最大 `maxlen`；`END` 里只有 `maxlen >= min(4, length(npat))` 才打印
+   `substr(npat, 1, maxlen)` —— 这就是**实际匹配用的前缀**。
+   最短试到 **4 个字符**；查询去 `_` 后不足 4 个字符就整个试；
+4. **输出**：`pfx` 与"用户输入去 `_` 后"**不同**时，stdout 先打三行表头
+   （`用户输入<原样输入>` / `实际匹配<pfx>` / `匹配目标名如下：`），再打命中行；
+   相同就不打表头（正常命中保持干净输出）。随后那次搜索用 `WRG_PAT=<pfx>`、
+   `WRG_FUZZY=1`，也就是**子串匹配**（不锚定在目标名开头：`-i kphony1` 仍要能命中
+   `mkphony1`），高亮包住前缀在原文里覆盖的那一段。
+
+模糊那条路的 rg 粗筛正则由 `_wrg_re_us` 生成：把 `pfx` 的每个字符转义后**逐字挂一个 `_*`**、
+整段套 `(?i:…)` —— 归一化只做"去掉 `_`"，所以"归一化后含 `pfx`"⇔"原文匹配这条正则"，
+粗筛既不漏（`vbmeta_system_mk` 能被 `vbmetasystem` 命中）也不误伤（`. ` 这类元字符仍按字面量）。
+
+- 表头只在"截断过"时出现：`wrg -i vbmeta_system`（带 `_`）与 `wrg -i vbmetasystem` 等价、
+  都不打表头；`wrg -i vbmeta_systmmm` 打表头（实际匹配 `vbmetasyst`）；
+- 到最短长度仍无命中 → stderr `wrg: 没有匹配 '<用户输入>' 的目标名`，返回 1
+  （不附"试到的最短前缀"那句，免得和既有报错文字分叉）；
+- `-i` 之外的行为（精确匹配、后端选择、`WRG_COLOR` / `NO_COLOR`、排序、退出码）不变。
+
 
 ### 4.6 `start` 的补全
 
@@ -225,6 +295,16 @@ pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glo
   注释里的冒号、同名目标 `mkshared`；外加 `GNUmakefile` / `makefile` / `extra.mk` / `other.mak` /
   `Android.mk`（里面故意放一条只有 Makefile 语义才认的 `mkandroidrule:`）/ `Android.bp`），
   另加 `$T/mkonly`（只有 `Makefile`）和 `$T/amonly`（只有 `Makefile.am`）两棵小树；
+- wrg 的**假阳性夹具**是第四棵树 `$T/src4`：`keep/Makefile` 15 行（行号钉着）——
+  真目标 `.PHONY: fpzreal` / `fpzreal: $(FPZ_DEPS)` / `fpzmulti1 fpzmulti2: dep`，
+  夹着 TAB 缩进的 `@echo "Target fpzreal fprec1 fs image: $(1)"`、空格缩进的
+  `  @echo "Install fpzreal fprec2 fs image: $@"`、`define fpzdefine` /
+  `  @echo "Uncompress fpzdeftarget $1"` / `endef`、`$(info fpzinfo: $(FPZ_DEPS))`、
+  `# fpzcommented: comment`、`VAR := fpzvar`、`export A := fpzexport`、`ifeq (...)`、
+  TAB 缩进的 `	fpztabtarget: $(X)`（前两条照抄真 AOSP `build/make/core/Makefile`）；
+- wrg 的**模糊算法夹具**是第五棵树 `$T/src5`：`keep/Android.bp` 三个 `name:`
+  （`vbmetasystem` / `vbmetasystem_ext` / `vbmeta_system_other`）+
+  `keep/Makefile`（`.PHONY: vbmeta_system_mk` + `vbmeta_system_mk: dep` + 一条 TAB recipe）；
 - `sh_eval <shell> <片段>` 在 `$T/ws/a/b` 里 `source` 对应 env 后执行片段，
   并清掉继承来的 `WTOOL_PROJECT_ROOT` / `WTOOL_PROJECT_ID`；
 - `for sh in bash zsh` 同一张表跑两遍；没装某个 shell 就跳过那一段；
@@ -244,6 +324,24 @@ pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glo
   `.PHONY` 本身 / 带 `/` 的目标 / 三类文件混在一棵树里同名目标都命中且按路径排序 /
   `GNUmakefile`·`makefile`·`*.mk`·`*.mak` 都认 / `Android.mk` 的规则行不算、同名目标不重复出现，
   以及**反例**逐条：`VAR :=`、`VAR ?=`、`# 注释里的冒号`、`$(MKTARGET):`、两种 `ifeq` 都不命中；
+- **假阳性**（`$T/src4`，2026-10-07 加）：夹具里真目标 `fpzreal`（`.PHONY:` + 规则行）
+  旁边埋着 8 种"看着像目标其实不是"的行（TAB 缩进的 `@echo "…: …"`、空格缩进的同形状、
+  `define` 体内的 recipe、`$(info …)`、`# 注释:`、`VAR :=`、`export A :=`、
+  TAB 缩进的 `fpztabtarget: $(X)`），每行都带一个只属于它的探针名。断言：
+  `wrg fpzreal` / `wrg -i fpzreal` 的输出**只有那两行真目标**、
+  `| grep -c '@echo'` = 0、多目标行 `fpzmulti2` 照旧命中，
+  8 个探针名**精确 + 模糊各一条**都是 `没有匹配 … rc=1`（共 17 条/每个 shell）；
+- **新模糊算法**（`$T/src5`，2026-10-07 加）：三类文件混着有 `_` / 没 `_` 的目标名
+  （`vbmetasystem` / `vbmetasystem_ext` / `vbmeta_system_other` / `vbmeta_system_mk`）。断言：
+  `wrg -i vbmeta_systmmm` 的三行表头 + 5 行命中**逐字**（含"实际匹配 `vbmetasyst`"）、
+  表头第一行保留用户写的 `_`、`_` 归一等价（`-i vbmeta_system` 与 `-i vbmetasystem`
+  同一批、都不打表头）、正常命中 `grep -c 用户输入` = 0 而截断命中 = 1、
+  下界 4（`vbmzzzzzz` 不命中 rc=1；`vbme` 命中；不足 4 个字符的 `vbm` 整个试也命中）、
+  `-i 'libc.d'` 的 `.` 是字面量、`WRG_COLOR=always` 只包住实际匹配那一段（含 `_` 的原文
+  按原串下标）、`$T/src5` 上三后端 `cmp` 一致（截断带表头 + 归一 + 精确各一条）、
+  管道零 ANSI、`rg` / `fd` 那条路能命中带 `_` 的名字；
 - 后端相关的用例按"本机有没有那个可执行文件"跳过，所以条数随环境变：
-  同一个夹具下实测 **rg+fd 都在 = 199 条**、只有 rg = 185、只有 fd = 179、都没有（纯 find）= 161，
-  失败都是 0（**以脚本最后一行输出为准**）。
+  同一个夹具下实测 2026-10-07 **rg+fd 都在 = 277 通过**（另有 2 条本机 `win | head -1`
+  的破管道老毛病，与 wrg 无关）、只有 rg = 259、只有 fd = 253、都没有（纯 find）= 229，
+  四种情况的失败数都是那同样的 2 条；容器 `wrg-test` 里（非 WSL、没有 `ip`）
+  是 **275 通过 / 0 失败**（**以脚本最后一行输出为准**）。

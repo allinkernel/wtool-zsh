@@ -116,6 +116,47 @@ mkdir -p "$T/mkonly" "$T/amonly"
 printf 'mkonly:\n\t@echo hi\n' > "$T/mkonly/Makefile"
 printf 'amtarget:\n\t@echo hi\n' > "$T/amonly/Makefile.am"
 
+# wrg 假阳性的夹具（$T/src4）：这些"看起来像目标定义"的行都不是目标。
+# 第 3、4 行照抄真 AOSP（build/make/core/Makefile 里 recipe 用 TAB 缩进，
+# define 体内那行用空格缩进）；每行都埋了真目标名 fpzreal 和一个只在那一行出现的探针名。
+# 行号被断言钉着，改动要连用例一起改。
+mkdir -p "$T/src4/keep"
+cat > "$T/src4/keep/Makefile" <<'EOF'
+.PHONY: fpzreal
+fpzreal: $(FPZ_DEPS)
+	@echo "Target fpzreal fprec1 fs image: $(1)"
+  @echo "Install fpzreal fprec2 fs image: $@"
+define fpzdefine
+  @echo "Uncompress fpzdeftarget $1"
+endef
+$(info fpzinfo: $(FPZ_DEPS))
+# fpzcommented: comment
+VAR := fpzvar
+export A := fpzexport
+ifeq ($(strip $(FPZ)),)
+endif
+	fpztabtarget: $(X)
+fpzmulti1 fpzmulti2: dep
+EOF
+
+# wrg 模糊算法（去 _ + 逐级截断）的夹具（$T/src5）：名字里故意混着有 _ / 没 _ 两种写法，
+# 让三类文件都过一遍（Android.bp 的 name、Makefile 的目标名）。行号同样被断言钉着。
+mkdir -p "$T/src5/keep"
+cat > "$T/src5/keep/Android.bp" <<'EOF'
+cc_library {
+    name: "vbmetasystem",
+}
+
+cc_library {
+    name: "vbmetasystem_ext",
+}
+
+cc_library {
+    name: "vbmeta_system_other",
+}
+EOF
+printf '.PHONY: vbmeta_system_mk\nvbmeta_system_mk: dep\n\t@echo hi\n' > "$T/src5/keep/Makefile"
+
 # wrg 后端探测的夹具：一堆只有一个可执行名的假 PATH（内容为空也行，探测只看命令在不在）
 mkdir -p "$T/bin-rg" "$T/bin-fdfind" "$T/bin-fd-find" "$T/bin-fd" "$T/bin-none"
 for c in rg fdfind fd-find fd; do : > "$T/bin-$c/$c"; chmod +x "$T/bin-$c/$c"; done
@@ -323,6 +364,12 @@ $(whoami)@10.1.2.3:$target"
         *"没有 Android.bp / Android.mk / Makefile"*) ok "$sh：wrg 说清了当前树下没有这三类文件" ;;
         *) bad "$sh：wrg 的提示不清楚 [$out]" ;;
     esac
+    # 模糊那条路要先枚举目标名再搜：没有可搜文件时也得先报这个（别报成"没有匹配"）
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/empty'; wrg -i libfoo; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -i 在没有这三类文件的目录：同样报"没有可搜文件"" "$out" \
+        "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile
+rc=1"
     rc=0
     out=$(sh_eval "$sh" 'wrg') || rc=$?
     chk "$sh：wrg 不带参数：退出码 2（报用法）" "$rc" "2"
@@ -484,6 +531,141 @@ rc=1"
         chk "$sh：Makefile 夹具的着色输出 auto 与 find 也逐字一致" \
             "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_COLOR=always; wrg -i mkrule")" \
             "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i mkrule")"
+    fi
+
+    # ---- wrg：假阳性 —— recipe / 字符串 / 变量都不算目标（$T/src4）----
+    # 正反两面一起钉：真目标（fpzreal）照旧命中，埋在假阳性行里的同一个词一个都不许出现
+    chk "$sh：wrg 只认真目标：recipe 行一个都不命中、真目标照旧命中" \
+        "$(sh_eval "$sh" "cd '$T/src4'; wrg fpzreal")" \
+        './keep/Makefile:1:.PHONY: fpzreal
+./keep/Makefile:2:fpzreal: $(FPZ_DEPS)'
+    chk "$sh：wrg 的输出里没有 @echo 那种 recipe 行（grep -c @echo）" \
+        "$(sh_eval "$sh" "cd '$T/src4'; wrg fpzreal | grep -c '@echo' || true")" "0"
+    chk "$sh：wrg -i 同样只认真目标（recipe 行不命中）" \
+        "$(sh_eval "$sh" "cd '$T/src4'; wrg -i fpzreal")" \
+        './keep/Makefile:1:.PHONY: fpzreal
+./keep/Makefile:2:fpzreal: $(FPZ_DEPS)'
+    chk "$sh：wrg 的多目标真目标照旧（fpzmulti2）" \
+        "$(sh_eval "$sh" "cd '$T/src4'; wrg fpzmulti2")" \
+        './keep/Makefile:15:fpzmulti1 fpzmulti2: dep'
+
+    # 每一种假阳性形状单独一条（精确 + 模糊都要不命中）
+    for probe in 'fprec1|TAB 缩进的 recipe（@echo "…: …"）' \
+                 'fprec2|空格缩进的 recipe（@echo "…: …"）' \
+                 'fpzdeftarget|define 体内的 recipe' \
+                 'fpzinfo|$(info …: …)' \
+                 'fpzcommented|# 注释里的冒号' \
+                 'fpzvar|VAR := 赋值' \
+                 'fpzexport|export A := 赋值' \
+                 'fpztabtarget|TAB 缩进的目标形状行'; do
+        pname=${probe%%|*}; pwhat=${probe#*|}
+        rc=0
+        out=$(sh_eval "$sh" "cd '$T/src4'; wrg '$pname'; echo rc=\$?") || rc=$?
+        chk "$sh：wrg 不把 $pwhat 当目标（精确 $pname）" "$out" \
+            "wrg: 没有匹配 '$pname' 的目标名
+rc=1"
+        rc=0
+        out=$(sh_eval "$sh" "cd '$T/src4'; wrg -i '$pname'; echo rc=\$?") || rc=$?
+        chk "$sh：wrg 不把 $pwhat 当目标（模糊 $pname）" "$out" \
+            "wrg: 没有匹配 '$pname' 的目标名
+rc=1"
+    done
+
+    # ---- wrg：新的模糊算法（去 _ + 逐级截断到 4）----
+    want5='用户输入vbmeta_systmmm
+实际匹配vbmetasyst
+匹配目标名如下：
+./keep/Android.bp:2:    name: "vbmetasystem",
+./keep/Android.bp:6:    name: "vbmetasystem_ext",
+./keep/Android.bp:10:    name: "vbmeta_system_other",
+./keep/Makefile:1:.PHONY: vbmeta_system_mk
+./keep/Makefile:2:vbmeta_system_mk: dep'
+    chk "$sh：wrg -i 故意写错尾部：打表头 + 命中" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmeta_systmmm")" "$want5"
+    chk "$sh：wrg -i 表头第一行照抄用户输入（带 _，不归一化）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmeta_sys_tmmm | sed -n 1p")" \
+        "用户输入vbmeta_sys_tmmm"
+    chk "$sh：wrg -i 表头第二行是实际匹配的前缀（去 _ 又截断过）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmeta_sys_tmmm | sed -n 2p")" \
+        "实际匹配vbmetasyst"
+    chk "$sh：wrg -i 表头第三行是固定措辞" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmeta_sys_tmmm | sed -n 3p")" \
+        "匹配目标名如下："
+    # _ 归一：查询带 _ 与不带 _ 是同一个键（都不打表头，命中同一批）
+    chk "$sh：wrg -i 查询带 _ 与不带 _ 等价（vbmeta_system）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmeta_system")" \
+        './keep/Android.bp:2:    name: "vbmetasystem",
+./keep/Android.bp:6:    name: "vbmetasystem_ext",
+./keep/Android.bp:10:    name: "vbmeta_system_other",
+./keep/Makefile:1:.PHONY: vbmeta_system_mk
+./keep/Makefile:2:vbmeta_system_mk: dep'
+    chk "$sh：wrg -i 正常命中不打表头（grep -c 用户输入 = 0）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmetasystem | grep -c '用户输入' || true")" "0"
+    chk "$sh：wrg -i 截断命中才打表头（grep -c 用户输入 = 1）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmeta_systmmm | grep -c '用户输入' || true")" "1"
+    # 逐级截断的下界是 4：vbmzzzzzz 只共享 vbm（3 个字符）→ 不命中；
+    # 4 个字符（vbme）和"查询本身不足 4 个字符"（vbm）都照旧命中
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbmzzzzzz; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -i 逐级截断到 4 就不再往下（vbmzzzzzz 不命中）" "$out" \
+        "wrg: 没有匹配 'vbmzzzzzz' 的目标名
+rc=1"
+    chk "$sh：wrg -i 截断到 4 个字符仍然命中（vbme）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbme | wc -l")" "5"
+    chk "$sh：wrg -i 查询不足 4 个字符就整个试（vbm）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i vbm | wc -l")" "5"
+    # 元字符在模糊那条路里也是字面量（粗筛正则要转义）
+    chk "$sh：wrg -i 里的 . 是字面量（不命中 libcxd）" \
+        "$(sh_eval "$sh" "cd '$T/src2'; wrg -i 'libc.d'")" \
+        './keep/Android.bp:6:    name: "libc.d",'
+    # 高亮：模糊时只包住"实际匹配"的那一段（原文里有 _ 的按原串下标高亮）
+    chk "$sh：WRG_COLOR=always：模糊只包住实际匹配的前缀（含 _ 的原文也对）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i vbmeta_systmmm")" \
+        "用户输入vbmeta_systmmm
+实际匹配vbmetasyst
+匹配目标名如下：
+./keep/Android.bp:2:    name: \"${esc}[1;31mvbmetasyst${esc}[0mem\",
+./keep/Android.bp:6:    name: \"${esc}[1;31mvbmetasyst${esc}[0mem_ext\",
+./keep/Android.bp:10:    name: \"${esc}[1;31mvbmeta_syst${esc}[0mem_other\",
+./keep/Makefile:1:.PHONY: ${esc}[1;31mvbmeta_syst${esc}[0mem_mk
+./keep/Makefile:2:${esc}[1;31mvbmeta_syst${esc}[0mem_mk: dep"
+
+    # 三后端在 src5 上逐字一致（模糊带表头 + 精确各一条），着色也一致
+    wrg5_to () {   # <WRG_SEARCH 值> <输出文件> <wrg 参数...>：在 $T/src5 里跑
+        local v=$1 f=$2; shift 2
+        sh_eval "$sh" "cd '$T/src5'; WRG_SEARCH='$v'; wrg $*" > "$f"
+    }
+    wrg5_to find "$T/o5-fuzzy-find" -i vbmeta_systmmm
+    wrg5_to find "$T/o5-plain-find" -i vbmeta_system
+    wrg5_to find "$T/o5-exact-find" vbmetasystem
+    for v in auto fd rg; do
+        [ "$v" = fd ] && [ -z "$have_fd" ] && continue
+        [ "$v" = rg ] && [ "$have_rg" -eq 0 ] && continue
+        wrg5_to "$v" "$T/o5-fuzzy-$v" -i vbmeta_systmmm
+        wrg5_to "$v" "$T/o5-plain-$v" -i vbmeta_system
+        wrg5_to "$v" "$T/o5-exact-$v" vbmetasystem
+        if cmp -s "$T/o5-fuzzy-$v" "$T/o5-fuzzy-find" && cmp -s "$T/o5-plain-$v" "$T/o5-plain-find" &&
+           cmp -s "$T/o5-exact-$v" "$T/o5-exact-find"; then
+            ok "$sh：wrg（模糊算法夹具）WRG_SEARCH=$v 与 find 逐字一致（cmp：截断带表头 + 归一 + 精确）"
+        else
+            bad "$sh：wrg（模糊算法夹具）WRG_SEARCH=$v 与 find 不一致"
+        fi
+    done
+    chk "$sh：wrg（模糊算法夹具）管道里没有 ANSI（grep -c ESC）" \
+        "$(grep -c "$esc" "$T/o5-fuzzy-find" || true)" "0"
+    if [ "$have_rg" -eq 1 ] || [ -n "$have_fd" ]; then
+        chk "$sh：模糊算法夹具的着色输出 auto 与 find 逐字一致" \
+            "$(sh_eval "$sh" "cd '$T/src5'; unset NO_COLOR; WRG_COLOR=always; wrg -i vbmeta_systmmm")" \
+            "$(sh_eval "$sh" "cd '$T/src5'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i vbmeta_systmmm")"
+    fi
+    # 查询不带 _ 、目标名带 _ ：粗筛正则必须容忍名字里的 _（rg / fd 那条路最容易漏）
+    if [ "$have_rg" -eq 1 ]; then
+        chk "$sh：wrg（rg）模糊：带 _ 的目标名也命中" \
+            "$(sh_eval "$sh" "cd '$T/src5'; WRG_SEARCH=rg; wrg -i vbmetasystem | grep -c 'vbmeta_system_other'")" "1"
+    fi
+    if [ -n "$have_fd" ]; then
+        chk "$sh：wrg（fd）模糊：带 _ 的目标名也命中" \
+            "$(sh_eval "$sh" "cd '$T/src5'; WRG_SEARCH=fd; wrg -i vbmetasystem | grep -c 'vbmeta_system_other'")" "1"
     fi
 
     # 后端探测顺序（用只有一个可执行名的假 PATH 逼出来）
