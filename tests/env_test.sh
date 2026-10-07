@@ -47,6 +47,30 @@ android_app {
 }
 EOF
 
+# 交互式用例的 pty 辅助：python3 pty_run.py <shell> <env 文件> <IP> <端口>
+cat > "$T/pty_run.py" <<'PYEOF'
+import os, pty, re, sys, time
+sh, envfile, ip, port = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+pid, fd = pty.fork()
+if pid == 0:
+    code = 'source "%s" 2>/dev/null; proxy_on >/dev/null; printf "GOT=%%s:%%s" "$PROXY_IP" "$PROXY_PORT"' % envfile
+    os.execvp(sh, [sh, "-c", code])
+os.write(fd, (ip + "\n").encode()); time.sleep(0.25)
+os.write(fd, (port + "\n").encode())
+out = b""
+while True:
+    try:
+        d = os.read(fd, 1024)
+    except OSError:
+        break
+    if not d:
+        break
+    out += d
+os.waitpid(pid, 0)
+m = re.search(r"GOT=(\S+)", out.decode(errors="replace"))
+print(m.group(1) if m else "NONE")
+PYEOF
+
 # wrg 三后端（rg / fd / find）的夹具：正则元字符、大小写、注释、隐藏目录。
 # 单独一棵树（$T/src2），免得动到上面 $T/src 的既有期望值。
 mkdir -p "$T/src2/keep" "$T/src2/.hidden"
@@ -1243,6 +1267,38 @@ rc=1"
                 "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; WRG_SEARCH=fd; WRG_COLOR=always; wrg -i ctx -A1 -B1")" "$c7_find"
         fi
     fi
+
+    # ---- proxy_on / proxy_off（值：参数 → PROXY_IP/PROXY_PORT → 交互式询问）----
+    chk "$sh：proxy_on 带参数导出六个代理变量" \
+        "$(sh_eval "$sh" 'proxy_on 10.1.2.3 8080 >/dev/null; echo "$http_proxy|$all_proxy|$HTTP_PROXY|$PROXY_IP|$PROXY_PORT"')" \
+        "http://10.1.2.3:8080|socks5://10.1.2.3:8080|http://10.1.2.3:8080|10.1.2.3|8080"
+    chk "$sh：proxy_on 从 PROXY_IP/PROXY_PORT 取值（不再问）" \
+        "$(sh_eval "$sh" 'PROXY_IP=9.9.9.9 PROXY_PORT=3128 proxy_on >/dev/null; echo "$https_proxy"')" \
+        "http://9.9.9.9:3128"
+    chk "$sh：非交互且没值 → rc=2（不挂住）" \
+        "$(sh_eval "$sh" 'unset PROXY_IP PROXY_PORT; proxy_on </dev/null >/dev/null 2>&1; echo rc=$?')" \
+        "rc=2"
+    chk "$sh：端口非数字 → rc=2" \
+        "$(sh_eval "$sh" 'proxy_on 1.2.3.4 abc >/dev/null 2>&1; echo rc=$?')" \
+        "rc=2"
+    chk "$sh：no_proxy 是追加（保留原值）" \
+        "$(sh_eval "$sh" 'no_proxy=internal.example; proxy_on 1.1.1.1 1 >/dev/null; echo "$no_proxy"')" \
+        "internal.example,localhost,127.0.0.1,::1,.local"
+    chk "$sh：proxy_off 还原 no_proxy" \
+        "$(sh_eval "$sh" 'no_proxy=internal.example; proxy_on 1.1.1.1 1 >/dev/null; proxy_off >/dev/null; echo "${no_proxy:-空}"')" \
+        "internal.example"
+    chk "$sh：proxy_off 清掉六个代理变量、保留 PROXY_IP/PROXY_PORT" \
+        "$(sh_eval "$sh" 'proxy_on 1.1.1.1 1 >/dev/null; proxy_off >/dev/null; echo "${http_proxy:-空}|${HTTPS_PROXY:-空}|${ALL_PROXY:-空}|$PROXY_IP:$PROXY_PORT"')" \
+        "空|空|空|1.1.1.1:1"
+    chk "$sh：老 .zshrc 的别名被 unalias 掉（函数生效）" \
+        "$(sh_eval "$sh" 'alias proxy_on="echo 别名赢了"; proxy_on 2.2.2.2 2 >/dev/null; echo "$http_proxy"')" \
+        "http://2.2.2.2:2"
+    if command -v python3 >/dev/null 2>&1; then
+        chk "$sh：交互式询问（pty 里喂 8.8.8.8 / 8888）" \
+            "$(python3 "$T/pty_run.py" "$sh" "$proj/env.$sh" 8.8.8.8 8888)" \
+            "8.8.8.8:8888"
+    fi
+
 done
 
 printf '\n%d 通过, %d 失败\n' "$pass" "$fail"

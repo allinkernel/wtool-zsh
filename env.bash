@@ -206,6 +206,89 @@ win ()
     _win_server "$@"
 }
 
+# ── 代理开关：proxy_on / proxy_off ───────────────────────────────────
+# 原来这两条是 .zshrc 里写死 127.0.0.1:7897 的别名；现在搬到这里，取值顺序：
+#   ① 参数：proxy_on <IP> [端口]
+#   ② 环境变量：PROXY_IP / PROXY_PORT（上次 proxy_on 留下的，同 shell 不用再问）
+#   ③ 交互式询问（终端里才问；脚本/管道里直接报错，绝不挂住）
+# no_proxy 采取"保存原值 + 追加"：proxy_off 会把它还原，不会吃掉你内网的 no_proxy。
+unalias proxy_on proxy_off 2>/dev/null || true
+
+proxy_on ()
+{
+    unalias proxy_on 2>/dev/null || true
+    local _ip _port
+    _ip="${1:-${PROXY_IP:-}}"
+    _port="${2:-${PROXY_PORT:-}}"
+    if [ -z "${_ip}" ]; then
+        if [ ! -t 0 ]; then
+            echo "proxy_on: 没有 PROXY_IP，且当前不是交互终端。" >&2
+            echo "     用法：proxy_on <IP> [端口]，或先 export PROXY_IP=<地址>" >&2
+            return 2
+        fi
+        printf 'PROXY_IP [127.0.0.1]: ' >&2
+        IFS= read -r _ip || _ip=""
+        [ -n "${_ip}" ] || _ip=127.0.0.1
+    fi
+    if [ -z "${_port}" ]; then
+        if [ ! -t 0 ]; then
+            echo "proxy_on: 没有 PROXY_PORT，且当前不是交互终端。" >&2
+            echo "     用法：proxy_on <IP> <端口>，或先 export PROXY_PORT=<端口>" >&2
+            return 2
+        fi
+        printf 'PROXY_PORT [7897]: ' >&2
+        IFS= read -r _port || _port=""
+        [ -n "${_port}" ] || _port=7897
+    fi
+    case "${_port}" in
+        ''|*[!0-9]*)
+            echo "proxy_on: 端口必须是数字：'${_port}'" >&2
+            return 2
+            ;;
+    esac
+    export PROXY_IP="${_ip}" PROXY_PORT="${_port}"
+    export http_proxy="http://${_ip}:${_port}"
+    export https_proxy="http://${_ip}:${_port}"
+    export all_proxy="socks5://${_ip}:${_port}"
+    export HTTP_PROXY="http://${_ip}:${_port}"
+    export HTTPS_PROXY="http://${_ip}:${_port}"
+    export ALL_PROXY="socks5://${_ip}:${_port}"
+    # no_proxy：第一次开时把原值存起来，之后只追加（proxy_off 还原）
+    if [ -z "${_PROXY_NO_PROXY_SAVED+x}" ]; then
+        _PROXY_NO_PROXY_SAVED="${no_proxy-}"
+        export _PROXY_NO_PROXY_SAVED
+    fi
+    if [ -n "${no_proxy:-}" ]; then
+        case ",${no_proxy}," in
+            *",localhost,"*) : ;;
+            *) no_proxy="${no_proxy},localhost,127.0.0.1,::1,.local" ;;
+        esac
+    else
+        no_proxy="localhost,127.0.0.1,::1,.local"
+    fi
+    export no_proxy NO_PROXY="${no_proxy}"
+    echo "Proxy ON  http://${_ip}:${_port}  (all_proxy=socks5://${_ip}:${_port})"
+    echo "          no_proxy=${no_proxy}"
+    return 0
+}
+
+proxy_off ()
+{
+    unalias proxy_off 2>/dev/null || true
+    unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+    if [ -n "${_PROXY_NO_PROXY_SAVED+x}" ]; then
+        if [ -n "${_PROXY_NO_PROXY_SAVED}" ]; then
+            no_proxy="${_PROXY_NO_PROXY_SAVED}"
+            export no_proxy NO_PROXY="${no_proxy}"
+        else
+            unset no_proxy NO_PROXY
+        fi
+        unset _PROXY_NO_PROXY_SAVED
+    fi
+    echo 'Proxy OFF（代理变量已清除；PROXY_IP/PROXY_PORT 留着，下次 proxy_on 不用再问）'
+    return 0
+}
+
 start ()
 {
     this_is_not_wsl && echo "only wsl support this" && return 1

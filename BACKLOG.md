@@ -614,3 +614,17 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
 ## ⏸ 待拍板
 
 （暂时没有。）
+
+## ✅ 2026-10-07：`proxy_on` / `proxy_off` 从用户 .zshrc 搬进项目（值改成"问用户要"）
+
+- **需求**（用户原话大意）：把 `.zshrc` 里写死 `127.0.0.1:7897` 的 `proxy_on`/`proxy_off`
+  搬进 `shell/zsh`，**参考 `win` 的风格，操作前要求用户输入 `PROXY_IP` 和 `PROXY_PORT`**。
+- **实现**：两个 shell 文件里各加一节（**2810 字节逐字相同**）；取值顺序
+  参数 → `$PROXY_IP`/`$PROXY_PORT` → 交互式询问；`[ -t 0 ]` 为假时 **rc=2 + 提示，绝不挂住**；
+  端口非数字 rc=2；`all_proxy` 用 `socks5://`；`no_proxy` **存原值 + 追加**、`proxy_off` 还原；
+  定义前 `unalias proxy_on proxy_off`（老别名优先于函数，不清掉函数轮不到）。
+- **验证**：`tests/env_test.sh` 新增 **9×2 = 18 条**（参数/环境变量/非交互 rc=2/非法端口/
+  no_proxy 追加/还原/清六个保留 IP 端口/别名被 unalias/pty 交互式询问）→ 本机 **517 通过 / 2 失败**
+  （那 2 条是既有的 `win` share 前缀用例，与本次无关）；两个 shell 行为逐字一致。
+- **可重跑判据**：见 `architecture.md` §4.6 末尾那段 for 循环（bash/zsh 各跑一遍，输出注释里那四行）。
+- **注意**：用户 `.zshrc` 第 41–57 行那两条别名现在**失效**（被 unalias），可以删；不删也不影响。

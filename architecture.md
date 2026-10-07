@@ -69,7 +69,45 @@
 | `this_is_not_wsl` | 与 `this_is_wsl` 相反 | 0/1 |
 | `win` | WSL：`wslpath -w .`；非 WSL：走 `_win_server`（见 4.4） | 0 / 1 |
 | `start <程序>` | 非 WSL 打 `only wsl support this` 返回 1；WSL 上 `powershell.exe -Command "Set-Location -Path \"$(win)\"; Start-Process $1"` | 0 / 1 |
+| `proxy_on [IP] [端口]` | 开代理：取值顺序 **参数 → `$PROXY_IP`/`$PROXY_PORT` → 交互式询问**（非交互终端且没值 → rc=2、不挂住）；导出 `http_proxy`/`https_proxy`/`all_proxy` 及其大写共 6 个；`no_proxy` 采取"存原值再追加"（见 4.6） | 0 / 2 |
+| `proxy_off` | 关代理：unset 那 6 个；把 `no_proxy`/`NO_PROXY` **还原**成 `proxy_on` 之前的值；保留 `PROXY_IP`/`PROXY_PORT`（同 shell 再开不用重问） | 0 |
 | `wrg [选项] <名字>` | 见 4.5（选项位置自由；`-i` / `-e` / `-t` / `-A` / `-B` / `-C` / `-l` / `-c` / `-m` / `--color`） | 0 / 1 / 2 |
+
+### 4.6 代理开关（`proxy_on` / `proxy_off`）
+
+从用户 `.zshrc` 里搬进来的一对命令（**原来是写死 `127.0.0.1:7897` 的别名**）。两条都在
+`unalias proxy_on proxy_off 2>/dev/null || true` 之后定义 —— **别名优先于函数**，老 rc 里
+若还留着那两条别名，不清掉的话新函数根本轮不到（`tools/dsh-remote` 的 `harness` 踩过同一个坑）。
+
+**取值顺序**（`proxy_on [IP] [端口]`）：
+
+1. **参数**：`proxy_on 10.1.2.3 8080`；
+2. **环境变量**：`$PROXY_IP` / `$PROXY_PORT`（`proxy_on` 自己会导出，所以同一 shell 里第二次开不用再问）；
+3. **交互式询问**：`PROXY_IP [127.0.0.1]:` / `PROXY_PORT [7897]:`（回车取默认值）。
+   ⚠️ **只在 `[ -t 0 ]` 为真时才问**；在脚本/管道里没值就 **rc=2 + 两句提示**，绝不挂住。
+
+**导出的变量**：`http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY` = `http://<ip>:<端口>`，
+`all_proxy` / `ALL_PROXY` = `socks5://<ip>:<端口>`。
+
+**`no_proxy` 是"保存 + 追加"，不是覆盖**：第一次开时把原值存进 `_PROXY_NO_PROXY_SAVED`，
+再追加 `localhost,127.0.0.1,::1,.local`；`proxy_off` 把原值**还原**（原来没有就 unset）。
+这么做是因为这台机器的环境里本来就有内网 `no_proxy`（`172.x`/`10.x`…），覆盖掉会连带
+把内网直连也塞进代理。
+
+**端口校验**：非数字 → `proxy_on: 端口必须是数字：'xxx'`，rc=2（不导出任何变量）。
+
+判据（两 shell 同一张表，`tests/env_test.sh` 有 9×2 条）：
+
+```sh
+R=~/self/wtool/shell/zsh
+for sh in bash zsh; do
+  $sh -c ". $R/env.$sh
+    proxy_on 10.1.2.3 8080 >/dev/null; echo "\$http_proxy|\$all_proxy"      # http://10.1.2.3:8080|socks5://10.1.2.3:8080
+    unset PROXY_IP PROXY_PORT; proxy_on </dev/null; echo rc=\$?               # rc=2（非交互不挂住）
+    no_proxy=internal.example; proxy_on 1.1.1.1 1 >/dev/null; echo "\$no_proxy"  # internal.example,localhost,127.0.0.1,::1,.local
+    proxy_off >/dev/null; echo "\${no_proxy:-空}"                              # internal.example（还原）"
+done
+```
 
 内部辅助（不打算给人直接敲）：`_win_ip`、`_win_smb_shares`、`_win_server`、
 `_wrg_usage`、`_wrg_version`、`_wrg_backend`、`_wrg_color`、`_wrg_re_escape`、`_wrg_re_us`、

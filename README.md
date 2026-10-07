@@ -57,7 +57,7 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
 
 > `s` / `sl` / `lks` / `kls` 四个名字指向同一个 `ls` —— 历史习惯，**本仓库不定义 `ls` 本身**。
 
-### 3. 函数（公开 11 个 + 内部 4 个）
+### 3. 函数（公开 13 个 + 内部若个，见 architecture §4.3）
 
 #### `_up_to_have_dir <目录名>` —— 往上找目录
 
@@ -80,6 +80,27 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
   > 加了"最顶层那一格"一条用例；修复经过见 `BACKLOG.md`。
 - 它是 `cw` 的基础；`tools/git-repo-sh-tools` 里另有一份自己的同名副本
   （`env.zsh` / `env.bash` 各一份）。
+
+#### `proxy_on [IP] [端口]` / `proxy_off` —— 代理开关
+
+原来在你 `.zshrc` 里写死 `127.0.0.1:7897` 的两条别名，搬进项目后**不再写死**：
+
+```sh
+proxy_on                    # 没给值就问你要：PROXY_IP [127.0.0.1]: / PROXY_PORT [7897]:
+proxy_on 10.1.2.3 8080      # 也可以直接给
+PROXY_IP=… PROXY_PORT=… proxy_on   # 或者先 export（同一 shell 第二次开就不用再问）
+proxy_off                   # 清掉 6 个代理变量
+```
+
+- **取值顺序**：参数 → `$PROXY_IP`/`$PROXY_PORT` → **交互式询问**。
+  脚本/管道里没值就报错退出（rc=2），**不会挂住**。
+- 导出 `http_proxy` / `https_proxy` / `all_proxy` 与对应大写共 6 个；
+  `all_proxy` 用 `socks5://`。
+- **`no_proxy` 只追加、不覆盖**：开之前的值会记下来，`proxy_off` 时**还原** ——
+  你环境里那些内网段（`172.x`/`10.x`）不会被吃掉。
+- `proxy_off` 保留 `PROXY_IP`/`PROXY_PORT`，所以开关来回切不会每次都被问。
+- ⚠️ 老 `.zshrc` 里那两条 `alias proxy_on=…` / `alias proxy_off=…` 可以删了：
+  本文件在定义前会 `unalias` 一次，留着也不会生效（但看着乱）。
 
 #### `cw` —— 跳到 repo 工作区根
 
