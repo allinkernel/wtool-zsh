@@ -210,10 +210,15 @@ start ()
 
 # ---------------------------------------------------------------------------
 # wrg：在当前目录树下按"构建目标名"找 Android.bp / Android.mk / Makefile
-#   wrg <名字>      精确匹配目标名
-#   wrg -i <片段>   模糊匹配：枚举所有目标名（三类文件），两边都去掉 _ 再比，查询串
-#                   从尾部逐级截断，用"实际能命中的最长前缀"去匹配（最短试到 4 个字符）
-# 认三类文件：
+#   wrg [选项] <名字>         精确匹配目标名
+#   wrg [选项] -i <片段>      模糊匹配：枚举所有目标名（三类文件），两边都去掉 _ 再比，
+#                             查询串从尾部逐级截断，用"实际能命中的最长前缀"去匹配
+#                             （最短试到 4 个字符）
+#   wrg [选项] -e <名字> ...  多名字查询（取并集），-i 时每个名字各做一次模糊
+#   选项位置自由：wrg x -A3 与 wrg -A3 x 等价；布尔短选项可捆绑（-il）；
+#   带值短选项的值可以贴着写（-A3）也可以放下一格（-A 3）；-- 之后一律当查询串；
+#   位置参数只能有一个查询串（多个 → rc 2 + 用法），多个名字用 -e。
+# 认三类文件（-t/--type 可以只搜其中一类）：
 #   Android.bp  → name: "xxx"
 #   Android.mk  → LOCAL_MODULE / LOCAL_PACKAGE_NAME
 #   其它 Makefile（Makefile / makefile / GNUmakefile / *.mk（Android.mk 除外）/ *.mak）
@@ -222,14 +227,15 @@ start ()
 #   以 TAB 开头的行一律不算目标定义（Makefile 的 recipe 必须 TAB 缩进）；
 #   目标列表（冒号前那段）里有引号的也不算 —— @echo "aaa: bbb" 这种是字符串不是目标。
 # 输出：文件:行号:命中行（路径形状与 find 一致带 ./ 前缀，按文件+行号排序；
-#   命中的那一段在终端里高亮，管道/重定向时不着色）
+#   命中的那一段在终端里高亮，管道/重定向时不着色）；
+#   给了 -A/-B/-C 时上下文行打成"文件-行号-原文"、块与块之间打一行 --（grep 惯例），
+#   上下文的计算和着色一样在共用的 awk 那一层（三条后端因此逐字一致）。
 # 搜索后端：rg → fd（按 fdfind / fd-find / fd 探测）→ find，前一个没有才用下一个。
 #   rg / fd 默认跳过隐藏目录和 .gitignore 里的目录（例如 .repo/、out/），更快；
 #   要连这些目录一起搜（find 的老行为）就用 WRG_SEARCH=find。
 #   WRG_SEARCH=auto(默认)/rg/fd/find、WRG_COLOR=auto(默认)/always/never 是测试和兜底用的：
 #   指定了就必须用它，找不到那个可执行文件就报错（rc=2），不会偷偷换成别的。
 # ---------------------------------------------------------------------------
-_WRG_FD_GLOB='{Android.bp,Android.mk,Makefile,makefile,GNUmakefile,*.mk,*.mak}'   # fd 的 -g 是"开关"（不带参数），所有文件名合成一个 glob
 
 # 模糊匹配"枚举目标名"用的粗筛正则：不含查询串，把候选行全捞出来交给 awk 抠名字
 # （三条后端各用自己的办法扫文件；rg 这条路要靠它们，正则本身必须是宽的）
@@ -242,15 +248,28 @@ _WRG_RE_MAKE_NAME='^[^=#$:]*:'   # 第一个冒号出现在 = # $ 之前 —— 
 #   WRG_PASS=recheck 给 stdin 上的 "路径:行号:原文" 做真判命中（rg 那几套正则只是粗筛）；
 #   WRG_PASS=paint   给同一形状的行上色：命中的那一段红粗（\033[1;31m … \033[0m），
 #                    目标名里其余没匹配到的部分绿、不加粗（\033[32m … \033[0m）；
+#   WRG_PASS=ctx     先按 -B/-A 把命中行展开成带上下文的输出（命中行照旧着色，上下文行
+#                    不着色、形状是"路径-行号-原文"，块与块之间打一行 --），见 4.5.4；
 #   WRG_PASS=names   扫文件、WRG_PASS=names3 读 "路径:行号:原文"，两者都只枚举目标名，
-#                    最后打印"查询串去 _ 后能命中的最长前缀"（模糊匹配第一步）。
-# 判命中 / 抠目标名 / 枚举名字的逻辑只有这一份，三个后端共用，保证输出一致。
+#                    最后打印"查询串去 _ 后能命中的最长前缀"（模糊匹配第一步，一行一个查询）。
+# 判命中 / 抠目标名 / 枚举名字 / 着色 / 上下文都只有这一份，三个后端共用，保证输出一致。
+# 进来的环境变量：WRG_PAT（查询串，一行一个）、WRG_FUZZY、WRG_KINDS（认哪几类文件，
+# 1=bp 2=mk 3=其它 Makefile）、WRG_BEFORE / WRG_AFTER（上下文行数）、WRG_COLOR_ON。
 _WRG_AWK='BEGIN {
-    pat = ENVIRON["WRG_PAT"]; fuzzy = ENVIRON["WRG_FUZZY"] + 0
+    fuzzy = ENVIRON["WRG_FUZZY"] + 0
     pass = ENVIRON["WRG_PASS"]
-    npat = key(pat); nplen = length(npat); first = substr(npat, 1, 1)
+    np = split(ENVIRON["WRG_PAT"], P, "\n")
+    if (np == 0) { np = 1; P[1] = "" }
+    for (i = 1; i <= np; i++) {
+        NP[i] = key(P[i]); NL[i] = length(NP[i])
+        F1[i] = substr(NP[i], 1, 1); ML[i] = 0
+    }
+    kinds = ENVIRON["WRG_KINDS"]; if (kinds == "") kinds = "123"
+    bctx = ENVIRON["WRG_BEFORE"] + 0
+    actx = ENVIRON["WRG_AFTER"] + 0
+    on = ENVIRON["WRG_COLOR_ON"] + 0
     collect = (pass == "names" || pass == "names3")
-    maxlen = 0; hlen = 0
+    hlen = 0; nh = 0; cfile = ""; anyout = 0; newblk = 0
 }
 function norm(p) {
     if (p ~ /^\// || p ~ /^\.\//) return p
@@ -278,43 +297,50 @@ function key(s,   i, n, c, o) {
     }
     return tolower(o)
 }
-# 这个候选值算不算命中：精确比整个名字；模糊把两边都归一化后找子串。
+# 第 i 个查询串判一个候选值算不算命中：精确比整个名字；模糊把两边都归一化后找子串。
 # 命中返回"命中段在原串里的 0 基起点"，段长写进全局 hlen
 # （原串里可能夹着 _，高亮要按原串的下标来，所以不能直接用归一化后的长度）
-function hit(val,   nv, p, i, n, c, k, st) {
+function hit1(val, i,   nv, p, j, n, c, k, st) {
     if (!fuzzy) {
-        if (val == pat) { hlen = length(val); return 0 }
+        if (val == P[i]) { hlen = length(val); return 0 }
         return -1
     }
-    if (nplen == 0) return -1
+    if (NL[i] == 0) return -1
     nv = key(val)
-    p = index(nv, npat)
+    p = index(nv, NP[i])
     if (p == 0) return -1
     k = 0; st = 0; n = length(val)
-    for (i = 1; i <= n; i++) {
-        c = substr(val, i, 1)
+    for (j = 1; j <= n; j++) {
+        c = substr(val, j, 1)
         if (c == "_") continue
         k++
-        if (k == p) st = i
-        if (k == p + nplen - 1) { hlen = i - st + 1; return st - 1 }
+        if (k == p) st = j
+        if (k == p + NL[i] - 1) { hlen = j - st + 1; return st - 1 }
     }
     return -1
 }
-# 枚举模式（collect）用：把一个候选目标名和 npat 比"最长公共前缀"，记进 maxlen。
-# 归一化只做"去掉 _ + 转小写"，所以 npat 的前缀出现在某个名字里
+# 多个查询串：按顺序取第一个命中的（-e a -e b 就是"并集"，同一个名字只算一次）
+function hit(val,   i, o) {
+    for (i = 1; i <= np; i++) { o = hit1(val, i); if (o >= 0) return o }
+    return -1
+}
+# 枚举模式（collect）用：把一个候选目标名和每个查询串比"最长公共前缀"，记进 ML[]。
+# 归一化只做"去掉 _ + 转小写"，所以查询串的前缀出现在某个名字里
 # ⇔ 那个名字里有一段和它逐字相同（这就是"逐级截断"要找的东西）
-function addname(nm,   k, m, i, j, c) {
-    if (nplen == 0 || maxlen >= nplen) return
-    k = key(nm); m = length(k)
-    for (i = 1; i <= m; i++) {
-        if (substr(k, i, 1) != first) continue
-        c = 1
-        for (j = 2; j <= nplen && i + j - 1 <= m; j++) {
-            if (substr(k, i + j - 1, 1) != substr(npat, j, 1)) break
-            c = j
+function addname(nm,   i, k, m, j, l, st) {
+    for (i = 1; i <= np; i++) {
+        if (NL[i] == 0 || ML[i] >= NL[i]) continue
+        k = key(nm); m = length(k)
+        for (j = 1; j <= m; j++) {
+            if (substr(k, j, 1) != F1[i]) continue
+            l = 1
+            for (st = 2; st <= NL[i] && j + st - 1 <= m; st++) {
+                if (substr(k, j + st - 1, 1) != substr(NP[i], st, 1)) break
+                l = st
+            }
+            if (l > ML[i]) ML[i] = l
+            if (ML[i] >= NL[i]) break
         }
-        if (c > maxlen) maxlen = c
-        if (maxlen >= nplen) return
     }
 }
 # 每个候选值都从这儿过：枚举模式只记名字；别的模式判命中（命中写全局 v / vs，一行只认第一个）
@@ -402,10 +428,10 @@ function cand_mk(line,   vv) {
 }
 function cand(p, line,   k) {
     k = kind(p)
+    if (k == 0 || index(kinds, k) == 0) return 0   # -t/--type 没选中的类不算
     if (k == 1) return cand_bp(line)
     if (k == 2) return cand_mk(line)
-    if (k == 3) return cand_make(line)
-    return 0
+    return cand_make(line)
 }
 # 把 "路径:行号:原文" 拆进全局 fp / fl / ft，拆不开返回 0
 function split3(s,   i1, i2) {
@@ -415,6 +441,59 @@ function split3(s,   i1, i2) {
     if (i2 == i1) return 0
     fp = substr(s, 1, i1 - 1); fl = substr(s, i1 + 1, i2 - i1 - 1); ft = substr(s, i2 + 1)
     return 1
+}
+# 打一行结果：命中行 "路径:行号:原文"（on 时按 4.5.2 分两段上色），
+# 上下文行 "路径-行号-原文"（永不着色）。块边界的 -- 也在这儿打。
+function put(ln, txt, ishit,   o, vlen, mid) {
+    if (newblk) { if (anyout) print "--"; newblk = 0 }
+    anyout = 1
+    if (ishit && on && cand(cfile, txt)) {
+        o = hit(v)
+        if (o >= 0 && v != "") {
+            vlen = length(v); mid = ""
+            if (o > 0) mid = mid "\033[32m" substr(txt, vs, o) "\033[0m"
+            mid = mid "\033[1;31m" substr(txt, vs + o, hlen) "\033[0m"
+            if (o + hlen < vlen) mid = mid "\033[32m" substr(txt, vs + o + hlen, vlen - o - hlen) "\033[0m"
+            print cfile ":" ln ":" substr(txt, 1, vs - 1) mid substr(txt, vs + vlen)
+            return
+        }
+    }
+    if (ishit) print cfile ":" ln ":" txt
+    else print cfile "-" ln "-" txt
+}
+# ctx pass 用：把当前文件（cfile）的命中行号（HL[]，升序）展开成带上下文的输出。
+# 命中窗口 [行号-B, 行号+A] 重叠或相邻的合并成一块（不重复打印、也不多打 --）；
+# 块与块之间、文件与文件之间打一行 --（grep 惯例）。
+function flush(   i, lo, hi, m, ln, txt, hp, r, ishit, cur_lo, cur_hi) {
+    if (cfile == "" || nh == 0) { cfile = ""; nh = 0; return }
+    m = 0
+    cur_lo = HL[1] - bctx; if (cur_lo < 1) cur_lo = 1
+    cur_hi = HL[1] + actx
+    for (i = 2; i <= nh; i++) {
+        lo = HL[i] - bctx; if (lo < 1) lo = 1
+        hi = HL[i] + actx
+        if (lo <= cur_hi + 1) { if (hi > cur_hi) cur_hi = hi; continue }
+        m++; RL[m] = cur_lo; RH[m] = cur_hi
+        cur_lo = lo; cur_hi = hi
+    }
+    m++; RL[m] = cur_lo; RH[m] = cur_hi
+    i = 1; ln = 0; hp = 1; r = 1
+    while (i <= m && r > 0) {
+        r = (getline txt < cfile)
+        if (r <= 0) break
+        ln++
+        if (ln > RH[i]) { i++; continue }
+        if (ln < RL[i]) continue
+        while (hp <= nh && HL[hp] < ln) hp++
+        ishit = (hp <= nh && HL[hp] == ln)
+        if (ln == RL[i]) newblk = 1
+        put(ln, txt, ishit)
+    }
+    if (ln == 0) {                     # 文件读不出来（删了 / 没权限）：上下文退化成只有命中行
+        for (i = 1; i <= nh; i++) { newblk = 1; put(HL[i], HT[i], 1) }
+    }
+    close(cfile)
+    cfile = ""; nh = 0
 }
 # 上色：命中的那一段 = 红 + 加粗；目标名里其余（没匹配到的）部分 = 绿、不加粗。
 # 精确模式命中的就是整个名字，两头都是空的 → 只有红段（和以前一样）；
@@ -443,6 +522,13 @@ pass == "names3" {
     cand(fp, ft)
     next
 }
+# ctx：命中行按"路径:行号:原文"进来（shell 侧已经排好序），按文件攒够一批再展开
+pass == "ctx" {
+    if (!split3($0)) next
+    if (fp != cfile) { flush(); cfile = fp; nh = 0 }
+    nh++; HL[nh] = fl + 0; HT[nh] = ft
+    next
+}
 {
     if (pass == "names") { cand(norm(FILENAME), $0); next }
     p = norm(FILENAME)
@@ -450,17 +536,46 @@ pass == "names3" {
     print p ":" FNR ":" $0
 }
 END {
-    if (collect && nplen > 0) {
-        floor = (nplen < 4) ? nplen : 4          # 最短试到 4 个字符；查询本身更短就整个试
-        if (maxlen >= floor) print substr(npat, 1, maxlen)
+    if (pass == "ctx") { flush(); exit }
+    if (collect) {
+        for (i = 1; i <= np; i++) {
+            if (NL[i] == 0) continue
+            floor = (NL[i] < 4) ? NL[i] : 4      # 最短试到 4 个字符；查询本身更短就整个试
+            if (ML[i] >= floor) print substr(NP[i], 1, ML[i])
+        }
     }
 }
 '
 
 _wrg_usage ()
 {
-    echo "Usage: wrg <名字>        # 精确匹配目标名"
-    echo "       wrg -i <片段>     # 模糊匹配：去 _ 、从尾部逐级截断，用能命中的最长前缀找"
+    echo "Usage: wrg [选项] <名字>"
+    echo "       wrg [选项] -e <名字> [-e <名字> ...]"
+    echo "选项位置自由：wrg x -A3 与 wrg -A3 x 等价；-- 之后一律当查询串。"
+    echo ""
+    echo "  -i, --ignore-case         模糊匹配：去 _ 后按子串找（默认精确匹配整个目标名）"
+    echo "  -e, --regexp <名字>       多名字查询（可重复，取并集；-i 时每个都做模糊）"
+    echo "  -t, --type bp|mk|make     只搜某类文件：bp=Android.bp mk=Android.mk"
+    echo "                            make=其它 Makefile（可重复 / 逗号分隔；不写=三类都搜）"
+    echo "  -A, --after-context <n>   命中行之后 n 行也打印（上下文行不着色）"
+    echo "  -B, --before-context <n>  命中行之前 n 行"
+    echo "  -C, --context <n>         前后各 n 行（等价 -A n -B n；块之间打一行 --）"
+    echo "  -l, --files               只打印命中的文件路径（去重、排序）"
+    echo "  -c, --count               打印每个文件的命中条数（路径:条数）"
+    echo "  -m, --max-count <n>       全局最多输出 n 条命中（按输出顺序取前 n）"
+    echo "      --color[=WHEN]        auto（默认）/ always / never；always 压过 NO_COLOR"
+    echo "  -h, --help                这份帮助"
+    echo "  -v, --version             版本与搜索后端"
+    echo ""
+    echo "环境：WRG_SEARCH=auto|rg|fd|find  WRG_COLOR=auto|always|never  NO_COLOR"
+}
+
+# 版本：打印版本号 + 当前会用的后端（后端取不到就 [?]，版本本身照样 rc 0）
+_wrg_version ()
+{
+    local b
+    b=$(_wrg_backend 2>/dev/null) || b='?'
+    printf 'wrg 1.0（后端 %s）\n' "${b}"
 }
 
 # 挑搜索后端：打印要用的可执行名（find 就是字面量 find）。
@@ -526,171 +641,435 @@ _wrg_norm ()
     printf '%s' "${1}" | tr -d '_' | tr 'A-Z' 'a-z'
 }
 
+# 选中的类型 → 提示语里的文件名（三类都选时逐字等于老提示语）
+_wrg_type_names ()
+{
+    local s=''
+    if [ "$1" -eq 1 ]; then s='Android.bp'; fi
+    if [ "$2" -eq 1 ]; then s=${s:+$s / }'Android.mk'; fi
+    if [ "$3" -eq 1 ]; then s=${s:+$s / }'Makefile'; fi
+    printf '%s\n' "${s}"
+}
+
+# 选中的类型 → fd 的 -g 文件名 glob（fd 的 -g 是开关，所有名字合成一个 glob）
+_wrg_fd_glob ()
+{
+    local g=''
+    if [ "$1" -eq 1 ]; then g='Android.bp'; fi
+    if [ "$2" -eq 1 ]; then g=${g:+$g,}'Android.mk'; fi
+    if [ "$3" -eq 1 ]; then g=${g:+$g,}'Makefile,makefile,GNUmakefile,*.mk,*.mak'; fi
+    printf '{%s}\n' "${g}"
+}
+
 # 模糊匹配第一步：枚举三类文件里的**所有目标名**（用和搜索同一个后端，每次都重扫当前
 # 目录、不缓存），把查询串去 _ 后从尾部逐级截断，打印"实际能命中的最长前缀"；
 # 短于 4 个字符不再往下截（查询本身不足 4 个字符就整个试）；一个都没命中就什么都不打印。
+# $3 $4 $5 = -t 选中的三类文件开关，$6 = kinds 掩码（判命中那一层的口径）。
 _wrg_prefix ()
 {
-    local tool=$1 pat=$2 pfx
+    local tool=$1 pat=$2 tbp=$3 tmk=$4 tmake=$5 kinds=$6 pfx
     case "${tool}" in
     rg)
-        pfx=$( { "${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${_WRG_RE_BP_NAME}" . 2>/dev/null
-                 "${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${_WRG_RE_MK_NAME}" . 2>/dev/null
-                 "${tool}" --no-heading --line-number --with-filename --color=never --type amake --type make -g '!Android.bp' -g '!Android.mk' -e "${_WRG_RE_MAKE_NAME}" . 2>/dev/null
-               } | WRG_PAT="${pat}" WRG_PASS=names3 awk "${_WRG_AWK}" ) ;;
+        pfx=$( { if [ "${tbp}" -eq 1 ]; then
+                     "${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${_WRG_RE_BP_NAME}" . 2>/dev/null
+                 fi
+                 if [ "${tmk}" -eq 1 ]; then
+                     "${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${_WRG_RE_MK_NAME}" . 2>/dev/null
+                 fi
+                 if [ "${tmake}" -eq 1 ]; then
+                     "${tool}" --no-heading --line-number --with-filename --color=never --type amake --type make -g '!Android.bp' -g '!Android.mk' -e "${_WRG_RE_MAKE_NAME}" . 2>/dev/null
+                 fi
+               } | WRG_PAT="${pat}" WRG_KINDS="${kinds}" WRG_PASS=names3 awk "${_WRG_AWK}" ) ;;
     find)
-        pfx=$(WRG_PAT="${pat}" WRG_PASS=names \
+        pfx=$(WRG_PAT="${pat}" WRG_KINDS="${kinds}" WRG_PASS=names \
             find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) \
             -exec awk "${_WRG_AWK}" {} + 2>/dev/null) ;;
     *)
-        pfx=$(WRG_PAT="${pat}" WRG_PASS=names \
-            "${tool}" -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}" 2>/dev/null) ;;
+        pfx=$(WRG_PAT="${pat}" WRG_KINDS="${kinds}" WRG_PASS=names \
+            "${tool}" -t f -g "$(_wrg_fd_glob "${tbp}" "${tmk}" "${tmake}")" -X awk "${_WRG_AWK}" 2>/dev/null) ;;
     esac
     # find -exec {} + / fd -X 会按命令行长度分批，每批各打印一行 → 取最长的那一行
     printf '%s\n' "${pfx}" | awk 'length($0) > length(m) { m = $0 } END { if (m != "") print m }'
 }
 
-# 要不要上色：WRG_COLOR=auto（默认，只有 stdout 是终端才上色）/ always / never；
-# NO_COLOR 非空时一律不上色（优先级最高）。返回 0 上色 / 1 不上色 / 2 取值不认（已报错）。
+# 要不要上色：$1 = 生效的取值（--color 优先，否则 WRG_COLOR，默认 auto）、
+# $2 = 1 表示这是显式 --color（rg 的语义：显式 always 压过 NO_COLOR；env 里的 WRG_COLOR
+# 仍旧被 NO_COLOR 压过）。auto 要 stdout 是终端、而且 NO_COLOR 为空。
+# 返回 0 上色 / 1 不上色 / 2 取值不认（已报错）。
 _wrg_color ()
 {
-    case "${WRG_COLOR:-auto}" in
-        auto|'') [ -t 1 ] || return 1 ;;
-        always)  ;;
+    case "${1}" in
+        always)
+            if [ "${2}" -eq 1 ]; then return 0; fi
+            if [ -n "${NO_COLOR:-}" ]; then return 1; fi
+            return 0 ;;
         never)   return 1 ;;
+        auto)    ;;
         *)
-            echo "wrg: WRG_COLOR 只认 auto / always / never（现在是 ${WRG_COLOR}）" >&2
+            echo "wrg: WRG_COLOR 只认 auto / always / never（现在是 ${1}）" >&2
             return 2 ;;
     esac
-    [ -n "${NO_COLOR:-}" ] && return 1
+    if [ -n "${NO_COLOR:-}" ]; then return 1; fi
+    [ -t 1 ] || return 1
     return 0
 }
 
 wrg ()
 {
-    local fuzzy=0 pat spat out rc tool errname brc color crc esc us pfx o1 o2 o3 r1 r2 r3 re_bp re_mk re_make
-    case "${1:-}" in
-        -h|--help) _wrg_usage; return 0 ;;
-        -i)        fuzzy=1; shift ;;
-        -*)        echo "wrg: 不认识的选项 ${1}" >&2; _wrg_usage >&2; return 2 ;;
-    esac
-    if [[ $# -ne 1 || -z "${1}" ]]; then
+    local fuzzy=0 files_only=0 count_only=0 maxc=-1 ctxa=0 ctxb=0 color=0 has_color=0 clicolor=''
+    local t_bp=0 t_mk=0 t_make=0 kinds='' endopts=0 npos=0 qn=0 np=0 qlist='' plist=''
+    local arg opt val hasval=0 rest c v tv rem rem2 q pat pfx esc us vals
+    local tool errname rc=0 out has brc=0 crc=0 cwhen=''
+
+    # ---- 参数扫描：位置自由，长/短选项都认（不用 getopts，POSIX 那套不认长选项）----
+    while [ $# -gt 0 ]; do
+        arg=$1; shift
+        opt=''; val=''; hasval=0
+        if [ "${endopts}" -eq 0 ]; then
+            case "${arg}" in
+            --)
+                endopts=1
+                continue ;;
+            --?*)
+                case "${arg}" in
+                *=*) opt=${arg%%=*}; val=${arg#*=}; hasval=1 ;;
+                *)   opt=${arg} ;;
+                esac
+                if [ "${hasval}" -eq 1 ]; then
+                    case "${opt}" in
+                    --color|--type|--max-count|--context|--after-context|--before-context|--regexp) ;;
+                    *) echo "wrg: ${opt} 不接受值（现在是 ${val}）" >&2; _wrg_usage >&2; return 2 ;;
+                    esac
+                fi ;;
+            -[!-]*)
+                # 短选项簇：布尔项就地处理，遇到要值的把剩下的字符当值（-ilA3 = -i -l -A 3）
+                rest=${arg#-}
+                while [ -n "${rest}" ]; do
+                    c=${rest%"${rest#?}"}; rest=${rest#?}
+                    case "${c}" in
+                    i) fuzzy=1 ;;
+                    l) files_only=1 ;;
+                    c) count_only=1 ;;
+                    h) _wrg_usage; return 0 ;;
+                    v) _wrg_version; return 0 ;;
+                    A|B|C|m|e|t)
+                        opt="-${c}"
+                        if [ -n "${rest}" ]; then val=${rest}; hasval=1; rest=''; fi
+                        break ;;
+                    *) echo "wrg: 不认识的选项 -${c}" >&2; _wrg_usage >&2; return 2 ;;
+                    esac
+                done
+                if [ -z "${opt}" ]; then continue; fi ;;
+            *)
+                opt='@' ;;
+            esac
+        else
+            opt='@'
+        fi
+
+        # 要值的选项：值可以贴在后面（-A3 / --color=always），也可以放下一格（-A 3）
+        case "${opt}" in
+        -A|-B|-C|-m|-e|-t|--after-context|--before-context|--context|--max-count|--regexp|--type|--color)
+            if [ "${hasval}" -eq 0 ]; then
+                if [ $# -eq 0 ]; then
+                    echo "wrg: 选项 ${opt} 缺值" >&2; _wrg_usage >&2; return 2
+                fi
+                val=$1; hasval=1; shift
+            fi ;;
+        esac
+
+        case "${opt}" in
+        '@')
+            if [ "${npos}" -ge 1 ]; then
+                echo "wrg: 只认一个查询串（多出来的：${arg}；多个名字请用 -e）" >&2
+                _wrg_usage >&2
+                return 2
+            fi
+            npos=1
+            if [ -z "${arg}" ]; then
+                echo "wrg: 查询串不能为空" >&2; _wrg_usage >&2; return 2
+            fi
+            qn=$((qn + 1))
+            if [ "${qn}" -eq 1 ]; then qlist=${arg}; else qlist=${qlist}'
+'${arg}; fi ;;
+        -i|--ignore-case) fuzzy=1 ;;
+        -l|--files)       files_only=1 ;;
+        -c|--count)       count_only=1 ;;
+        -h|--help)        _wrg_usage; return 0 ;;
+        -v|--version)     _wrg_version; return 0 ;;
+        -A|--after-context)
+            case "${val}" in
+            ''|*[!0-9]*) echo "wrg: ${opt} 需要一个非负整数（现在是 ${val}）" >&2; _wrg_usage >&2; return 2 ;;
+            esac
+            ctxa=${val} ;;
+        -B|--before-context)
+            case "${val}" in
+            ''|*[!0-9]*) echo "wrg: ${opt} 需要一个非负整数（现在是 ${val}）" >&2; _wrg_usage >&2; return 2 ;;
+            esac
+            ctxb=${val} ;;
+        -C|--context)
+            case "${val}" in
+            ''|*[!0-9]*) echo "wrg: ${opt} 需要一个非负整数（现在是 ${val}）" >&2; _wrg_usage >&2; return 2 ;;
+            esac
+            ctxa=${val}; ctxb=${val} ;;
+        -m|--max-count)
+            case "${val}" in
+            ''|*[!0-9]*) echo "wrg: ${opt} 需要一个非负整数（现在是 ${val}）" >&2; _wrg_usage >&2; return 2 ;;
+            esac
+            maxc=${val} ;;
+        -e|--regexp)
+            if [ -z "${val}" ]; then
+                echo "wrg: ${opt} 需要一个名字" >&2; _wrg_usage >&2; return 2
+            fi
+            qn=$((qn + 1))
+            if [ "${qn}" -eq 1 ]; then qlist=${val}; else qlist=${qlist}'
+'${val}; fi ;;
+        -t|--type)
+            if [ -z "${val}" ]; then
+                echo "wrg: ${opt} 需要一个类型（bp / mk / make）" >&2; _wrg_usage >&2; return 2
+            fi
+            rem2=${val}
+            while [ -n "${rem2}" ]; do
+                tv=${rem2%%,*}
+                case "${rem2}" in
+                *,*) rem2=${rem2#*,} ;;
+                *)   rem2='' ;;
+                esac
+                case "${tv}" in
+                bp)   t_bp=1 ;;
+                mk)   t_mk=1 ;;
+                make) t_make=1 ;;
+                '')   ;;                      # 空段忽略（"bp,,mk" / 结尾多一个逗号）
+                *) echo "wrg: ${opt} 只认 bp / mk / make（现在是 ${tv}）" >&2; _wrg_usage >&2; return 2 ;;
+                esac
+            done ;;
+        --color)
+            case "${val}" in
+            auto|always|never) ;;
+            *) echo "wrg: --color 只认 auto / always / never（现在是 ${val}）" >&2; _wrg_usage >&2; return 2 ;;
+            esac
+            clicolor=${val}; has_color=1 ;;
+        *)
+            echo "wrg: 不认识的选项 ${opt}" >&2; _wrg_usage >&2; return 2 ;;
+        esac
+    done
+
+    if [ "${qn}" -eq 0 ]; then
         _wrg_usage >&2
         return 2
     fi
-    pat="${1}"
+    # 诊断信息（"没有匹配 '…' 的目标名"）里用的是**用户输入的原串**，不是截断后的前缀
+    case "${qlist}" in
+    *'
+'*) pat=${qlist%%'
+'*} ;;
+    *)  pat=${qlist} ;;
+    esac
+
+    # 没写 -t 就是三类都搜
+    if [ "${t_bp}" -eq 0 ] && [ "${t_mk}" -eq 0 ] && [ "${t_make}" -eq 0 ]; then
+        t_bp=1; t_mk=1; t_make=1
+    fi
+    kinds=''
+    if [ "${t_bp}" -eq 1 ]; then kinds="${kinds}1"; fi
+    if [ "${t_mk}" -eq 1 ]; then kinds="${kinds}2"; fi
+    if [ "${t_make}" -eq 1 ]; then kinds="${kinds}3"; fi
 
     tool=$(_wrg_backend); brc=$?
-    if [[ ${brc} -ne 0 ]]; then return ${brc}; fi
+    if [ "${brc}" -ne 0 ]; then return ${brc}; fi
 
+    if [ "${has_color}" -eq 1 ]; then cwhen=${clicolor}; else cwhen=${WRG_COLOR:-auto}; fi
     color=0
-    _wrg_color; crc=$?
-    if [[ ${crc} -eq 2 ]]; then return 2; fi
-    if [[ ${crc} -eq 0 ]]; then color=1; fi
+    _wrg_color "${cwhen}" "${has_color}"; crc=$?
+    if [ "${crc}" -eq 2 ]; then return 2; fi
+    if [ "${crc}" -eq 0 ]; then color=1; fi
 
-    # 先看树里有没有这三类文件，没有就没必要往下走
+    # 先看树里有没有选中类型的文件，没有就没必要往下走
     case "${tool}" in
     rg)
         errname="${tool}"
         # rg --files 只看文件名，和后面的搜索遵守同一套 ignore 规则
-        if [[ -z "$("${tool}" --files -g Android.bp -g Android.mk -g Makefile -g makefile -g GNUmakefile -g '*.mk' -g '*.mak' . 2>/dev/null | head -n 1)" ]]; then
-            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
+        has=$(
+            set -- --files
+            if [ "${t_bp}" -eq 1 ]; then set -- "$@" -g Android.bp; fi
+            if [ "${t_mk}" -eq 1 ]; then set -- "$@" -g Android.mk; fi
+            if [ "${t_make}" -eq 1 ]; then set -- "$@" -g Makefile -g makefile -g GNUmakefile -g '*.mk' -g '*.mak'; fi
+            "${tool}" "$@" . 2>/dev/null | head -n 1
+        )
+        if [ -z "${has}" ]; then
+            echo "wrg: 当前目录树下没有 $(_wrg_type_names "${t_bp}" "${t_mk}" "${t_make}")" >&2
             return 1
         fi
         ;;
     find)
         errname="find/awk"
-        if [[ -z "$(find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) -print -quit 2>/dev/null)" ]]; then
-            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
+        has=$(
+            set -- -type f \(
+            v=0
+            if [ "${t_bp}" -eq 1 ]; then set -- "$@" -name Android.bp; v=1; fi
+            if [ "${t_mk}" -eq 1 ]; then
+                if [ "${v}" -eq 1 ]; then set -- "$@" -o; fi
+                set -- "$@" -name Android.mk; v=1
+            fi
+            if [ "${t_make}" -eq 1 ]; then
+                if [ "${v}" -eq 1 ]; then set -- "$@" -o; fi
+                set -- "$@" -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak'
+            fi
+            set -- "$@" \)
+            find . "$@" -print -quit 2>/dev/null
+        )
+        if [ -z "${has}" ]; then
+            echo "wrg: 当前目录树下没有 $(_wrg_type_names "${t_bp}" "${t_mk}" "${t_make}")" >&2
             return 1
         fi
         ;;
     *)
         errname="${tool}/awk"
-        if [[ -z "$("${tool}" -t f -g "${_WRG_FD_GLOB}" 2>/dev/null | head -n 1)" ]]; then
-            echo "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile" >&2
+        if [ -z "$("${tool}" -t f -g "$(_wrg_fd_glob "${t_bp}" "${t_mk}" "${t_make}")" 2>/dev/null | head -n 1)" ]; then
+            echo "wrg: 当前目录树下没有 $(_wrg_type_names "${t_bp}" "${t_mk}" "${t_make}")" >&2
             return 1
         fi
         ;;
     esac
 
-    # 模糊匹配：先枚举目标名、算出"实际匹配"的前缀，再用它去搜。
+    # 每个查询串先定"实际拿去找"的模式：精确 = 原样；模糊 = 枚举目标名算出的最长可命中前缀。
     # 只有"实际匹配"和用户输入（去 _ 之后）不一样时才打表头，正常命中保持干净输出。
-    spat="${pat}"
-    if [[ ${fuzzy} -eq 1 ]]; then
-        pfx=$(_wrg_prefix "${tool}" "${pat}")
-        if [[ -z "${pfx}" ]]; then
-            echo "wrg: 没有匹配 '${pat}' 的目标名" >&2
-            return 1
+    # 模糊那条路上某个名字一个都没命中 → 报一行、跳过它（全都跳过了才 rc 1）。
+    rem=${qlist}
+    while [ -n "${rem}" ]; do
+        case "${rem}" in
+        *'
+'*) q=${rem%%'
+'*}; rem=${rem#*'
+'} ;;
+        *)  q=${rem}; rem='' ;;
+        esac
+        if [ "${fuzzy}" -eq 1 ]; then
+            pfx=$(_wrg_prefix "${tool}" "${q}" "${t_bp}" "${t_mk}" "${t_make}" "${kinds}")
+            if [ -z "${pfx}" ]; then
+                echo "wrg: 没有匹配 '${q}' 的目标名" >&2
+                continue
+            fi
+            if [ "${pfx}" != "$(_wrg_norm "${q}")" ]; then
+                printf '用户输入%s\n' "${q}"
+                printf '实际匹配%s\n' "${pfx}"
+                printf '匹配目标名如下：\n'
+            fi
+            q=${pfx}
         fi
-        if [[ "${pfx}" != "$(_wrg_norm "${pat}")" ]]; then
-            printf '用户输入%s\n' "${pat}"
-            printf '实际匹配%s\n' "${pfx}"
-            printf '匹配目标名如下：\n'
-        fi
-        spat="${pfx}"
-    fi
+        np=$((np + 1))
+        if [ "${np}" -eq 1 ]; then plist=${q}; else plist=${plist}'
+'${q}; fi
+    done
+    if [ "${np}" -eq 0 ]; then return 1; fi
 
     case "${tool}" in
     rg)
         # 三类文件的写法不一样 → 各搜一次再合并；值要做正则转义，
-        # 关键词那部分的大小写要敏感（模糊只对值用 (?i:...)）
-        esc=$(_wrg_re_escape "${spat}")
-        if [[ ${fuzzy} -eq 0 ]]; then
-            re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"${esc}\""
-            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*'"${esc}"'([[:space:]#]|$)'
-            re_make='(^|[^[:alnum:]_])'"${esc}"'([^[:alnum:]_]|$)'
+        # 关键词那部分的大小写要敏感（模糊只对值用 (?i:...)）。
+        # 多个查询串（-e）合成一个 alternation，粗筛一次就够，真判命中仍在 awk。
+        vals=''; us=''
+        rem=${plist}
+        while [ -n "${rem}" ]; do
+            case "${rem}" in
+            *'
+'*) q=${rem%%'
+'*}; rem=${rem#*'
+'} ;;
+            *)  q=${rem}; rem='' ;;
+            esac
+            esc=$(_wrg_re_escape "${q}")
+            if [ -z "${vals}" ]; then vals=${esc}; else vals=${vals}'|'"${esc}"; fi
+            if [ -z "${us}" ]; then us=$(_wrg_re_us "${q}"); else us=${us}'|'"$(_wrg_re_us "${q}")"; fi
+        done
+        if [ "${fuzzy}" -eq 0 ]; then
+            re_bp='^[[:space:]]*name[[:space:]]*:[[:space:]]*"('"${vals}"')"'
+            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*('"${vals}"')([[:space:]#]|$)'
+            re_make='(^|[^[:alnum:]_])('"${vals}"')([^[:alnum:]_]|$)'
         else
             # 模糊：只让"值"那一段忽略大小写（(?i:...)），关键词仍旧大小写敏感；
             # Makefile 那套不能加词边界 —— -i system 得能命中 vbmetasystemimage 这种
-            us=$(_wrg_re_us "${spat}")
-            re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"[^\"]*${us}[^\"]*\""
-            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]*'"${us}"
-            re_make="${us}"
+            re_bp='^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*('"${us}"')[^"]*"'
+            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]*('"${us}"')'
+            re_make='('"${us}"')'
         fi
-        o1=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${re_bp}" . 2>/dev/null); r1=$?
-        o2=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${re_mk}" . 2>/dev/null); r2=$?
+        o1=''; o2=''; o3=''; r1=0; r2=0; r3=0
+        if [ "${t_bp}" -eq 1 ]; then
+            o1=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${re_bp}" . 2>/dev/null); r1=$?
+        fi
+        if [ "${t_mk}" -eq 1 ]; then
+            o2=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${re_mk}" . 2>/dev/null); r2=$?
+        fi
         # 第三套 = 其它 Makefile：--type amake 是 *.bp/*.mk、--type make 是 Makefile/*.mk/*.mak，
         # 两套都会捎上 Android.bp / Android.mk，用 -g '!…' 排掉，免得被 Makefile 语义再算一遍
-        o3=$("${tool}" --no-heading --line-number --with-filename --color=never --type amake --type make -g '!Android.bp' -g '!Android.mk' -e "${re_make}" . 2>/dev/null); r3=$?
+        if [ "${t_make}" -eq 1 ]; then
+            o3=$("${tool}" --no-heading --line-number --with-filename --color=never --type amake --type make -g '!Android.bp' -g '!Android.mk' -e "${re_make}" . 2>/dev/null); r3=$?
+        fi
         rc=0
-        if [[ ${r1} -gt 1 ]]; then rc=${r1}; fi     # rg：1 = 没命中，>1 才是真错
-        if [[ ${r2} -gt 1 ]]; then rc=${r2}; fi
-        if [[ ${r3} -gt 1 ]]; then rc=${r3}; fi
+        if [ "${r1}" -gt 1 ]; then rc=${r1}; fi     # rg：1 = 没命中，>1 才是真错
+        if [ "${r2}" -gt 1 ]; then rc=${r2}; fi
+        if [ "${r3}" -gt 1 ]; then rc=${r3}; fi
         # 三套正则只是"粗筛"（Makefile 那套尤其松）：真判命中回到共用的 awk（recheck），
         # 三条后端 + 两个 shell 的输出才逐字一致
         out=$(printf '%s\n%s\n%s' "${o1}" "${o2}" "${o3}" | \
-            WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=recheck awk "${_WRG_AWK}")
+            WRG_PAT="${plist}" WRG_FUZZY="${fuzzy}" WRG_KINDS="${kinds}" WRG_PASS=recheck awk "${_WRG_AWK}")
         ;;
     find)
-        out=$(WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
+        # 文件名谓词不跟着 -t 变：多认的文件由 awk 的 kinds 掩码丢掉（三条后端结果仍然一致）
+        out=$(WRG_PAT="${plist}" WRG_FUZZY="${fuzzy}" WRG_KINDS="${kinds}" WRG_PASS=search \
             find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) -exec awk "${_WRG_AWK}" {} + 2>/dev/null)
         rc=$?
         ;;
     *)
-        out=$(WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
-            "${tool}" -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}" 2>/dev/null)
+        out=$(WRG_PAT="${plist}" WRG_FUZZY="${fuzzy}" WRG_KINDS="${kinds}" WRG_PASS=search \
+            "${tool}" -t f -g "$(_wrg_fd_glob "${t_bp}" "${t_mk}" "${t_make}")" -X awk "${_WRG_AWK}" 2>/dev/null)
         rc=$?
         # fd 没命中时的退出码各版本不一样（9.0.0 给 0，有的给 1）：空输出 + 1 当"没命中"
-        if [[ -z "${out}" && ${rc} -eq 1 ]]; then rc=0; fi
+        if [ -z "${out}" ] && [ "${rc}" -eq 1 ]; then rc=0; fi
         ;;
     esac
 
-    if [[ ${rc} -ne 0 ]]; then
+    if [ "${rc}" -ne 0 ]; then
         echo "wrg: 搜索失败（${errname} 退出码 ${rc}）" >&2
         return 1
     fi
-    if [[ -z "${out}" ]]; then
+    # 先按纯文本排序（ANSI 不参与排序键）：-m 取前 n 条、上下文展开都在排序之后
+    if [ -n "${out}" ]; then
+        out=$(printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n)
+    fi
+    if [ "${maxc}" -ge 0 ]; then
+        # 用 awk 截断，不用 head：head 提前退出会让 printf 吃 SIGPIPE，多打一句 write error
+        out=$(printf '%s\n' "${out}" | awk -v n="${maxc}" 'NR <= n')
+    fi
+    if [ -z "${out}" ]; then
         echo "wrg: 没有匹配 '${pat}' 的目标名" >&2
         return 1
     fi
-    # 先按纯文本排序，再（只在终端上）过一遍着色，ANSI 不会污染排序键
-    # （着色也用 spat：模糊时高亮的是"实际匹配"的那段前缀）
-    if [[ ${color} -eq 1 ]]; then
-        printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n | \
-            WRG_PAT="${spat}" WRG_FUZZY="${fuzzy}" WRG_PASS=paint awk "${_WRG_AWK}"
+
+    # -l / -c 只出行（grep 的 -l 也压过 -c），不看上下文、不着色
+    if [ "${files_only}" -eq 1 ]; then
+        printf '%s\n' "${out}" | awk '{ p = $0; sub(/:.*/, "", p); if (p != last) { print p; last = p } }'
+        return 0
+    fi
+    if [ "${count_only}" -eq 1 ]; then
+        printf '%s\n' "${out}" | awk '{ p = $0; sub(/:.*/, "", p)
+            if (p != last) { if (last != "") printf "%s:%d\n", last, c; last = p; c = 0 }
+            c++ } END { if (last != "") printf "%s:%d\n", last, c }'
+        return 0
+    fi
+    # 上色 / 上下文都过共用的 awk（三条后端因此逐字一致）：
+    # 没有上下文（不写 -A/-B/-C，或 -A0 -B0 / -C0）走老的 paint 那条路，输出逐字不变
+    if [ "${ctxa}" -eq 0 ] && [ "${ctxb}" -eq 0 ]; then
+        if [ "${color}" -eq 1 ]; then
+            printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n | \
+                WRG_PAT="${plist}" WRG_FUZZY="${fuzzy}" WRG_KINDS="${kinds}" WRG_PASS=paint awk "${_WRG_AWK}"
+        else
+            printf '%s\n' "${out}"
+        fi
     else
-        printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n
+        printf '%s\n' "${out}" | \
+            WRG_PAT="${plist}" WRG_FUZZY="${fuzzy}" WRG_KINDS="${kinds}" \
+            WRG_BEFORE="${ctxb}" WRG_AFTER="${ctxa}" WRG_COLOR_ON="${color}" WRG_PASS=ctx awk "${_WRG_AWK}"
     fi
     return 0
 }

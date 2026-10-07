@@ -183,6 +183,36 @@ cc_library {
 }
 EOF
 
+# wrg 上下文行（-A / -B / -C）的夹具（$T/src7）：单一 Android.bp，行号全钉着 ——
+#   ctxa@2 / ctxb@7 / ctxc@20；1..9 里第 4、5 行相邻（-C2 时前两块必须合并成一块）。
+# 另有 keep/Android.mk（othertgt@1）用来验"跨文件也打 --"和 -l / -c 的多文件输出。
+mkdir -p "$T/src7/keep"
+cat > "$T/src7/keep/Android.bp" <<'EOF'
+cc_library {
+    name: "ctxa",
+    srcs: ["a.c"],
+}
+
+cc_library {
+    name: "ctxb",
+    srcs: ["b.c"],
+}
+
+// p1
+// p2
+// p3
+// p4
+// p5
+// p6
+// p7
+// p8
+cc_library {
+    name: "ctxc",
+    srcs: ["c.c"],
+}
+EOF
+printf 'LOCAL_MODULE := othertgt\n' > "$T/src7/keep/Android.mk"
+
 # wrg 后端探测的夹具：一堆只有一个可执行名的假 PATH（内容为空也行，探测只看命令在不在）
 mkdir -p "$T/bin-rg" "$T/bin-fdfind" "$T/bin-fd-find" "$T/bin-fd" "$T/bin-none"
 for c in rg fdfind fd-find fd; do : > "$T/bin-$c/$c"; chmod +x "$T/bin-$c/$c"; done
@@ -849,6 +879,370 @@ rc=1"
         "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH=find; wrg libhidden; echo rc=\$?")" \
         "./.hidden/Android.bp:2:    name: \"libhidden\",
 rc=0"
+    # ---- wrg：上下文行（-A / -B / -C）----
+    # 命中行照旧"路径:行号:原文"（可着色）；上下文行"路径-行号-原文"（不着色）；
+    # 不相邻的两个块之间打一行 --（grep 惯例）；重叠 / 相邻的块合并（不重复、不多打 --）。
+    want7a='./keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp-3-    srcs: ["a.c"],
+--
+./keep/Android.bp:7:    name: "ctxb",
+./keep/Android.bp-8-    srcs: ["b.c"],
+--
+./keep/Android.bp:20:    name: "ctxc",
+./keep/Android.bp-21-    srcs: ["c.c"],'
+    chk "$sh：wrg -A1：命中行冒号 / 上下文行减号 / 块之间 --（逐字节）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A1")" "$want7a"
+
+    want7b='./keep/Android.bp-1-cc_library {
+./keep/Android.bp:2:    name: "ctxa",
+--
+./keep/Android.bp-6-cc_library {
+./keep/Android.bp:7:    name: "ctxb",
+--
+./keep/Android.bp-19-cc_library {
+./keep/Android.bp:20:    name: "ctxc",'
+    chk "$sh：wrg -B1：只打命中行前面那 1 行（逐字节）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -B1")" "$want7b"
+
+    want7c='./keep/Android.bp-1-cc_library {
+./keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp-3-    srcs: ["a.c"],
+./keep/Android.bp-4-}
+./keep/Android.bp-5-
+./keep/Android.bp-6-cc_library {
+./keep/Android.bp:7:    name: "ctxb",
+./keep/Android.bp-8-    srcs: ["b.c"],
+./keep/Android.bp-9-}
+--
+./keep/Android.bp-18-// p8
+./keep/Android.bp-19-cc_library {
+./keep/Android.bp:20:    name: "ctxc",
+./keep/Android.bp-21-    srcs: ["c.c"],
+./keep/Android.bp-22-}'
+    chk "$sh：wrg -C2：重叠/相邻的块合并（逐字节；第 5、6 行只出现一次、只一个 --）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C2")" "$want7c"
+    want7plain='./keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp:7:    name: "ctxb",
+./keep/Android.bp:20:    name: "ctxc",'
+    want7d='./keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp-3-    srcs: ["a.c"],
+./keep/Android.bp-4-}
+--
+./keep/Android.bp:7:    name: "ctxb",
+./keep/Android.bp-8-    srcs: ["b.c"],
+./keep/Android.bp-9-}
+--
+./keep/Android.bp:20:    name: "ctxc",
+./keep/Android.bp-21-    srcs: ["c.c"],
+./keep/Android.bp-22-}'
+    want7e='./keep/Android.bp-1-cc_library {
+./keep/Android.bp:2:    name: "ctxa",
+--
+./keep/Android.bp-5-
+./keep/Android.bp-6-cc_library {
+./keep/Android.bp:7:    name: "ctxb",
+--
+./keep/Android.bp-18-// p8
+./keep/Android.bp-19-cc_library {
+./keep/Android.bp:20:    name: "ctxc",'
+    chk "$sh：wrg -C2：合并后没有重复行（sort | uniq -d 为空）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C2 | sort | uniq -d | wc -l")" "0"
+    chk "$sh：wrg -C2：块合并后总行数 = 15" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C2 | wc -l")" "15"
+    chk "$sh：wrg 不写 -A/-B/-C：一行 -- 都没有" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx | grep -c '^--$' || true")" "0"
+    chk "$sh：wrg -A1 的 -- 条数 = 块数-1 = 2" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A1 | grep -c '^--$' || true")" "2"
+    chk "$sh：wrg -C2 的 -- 条数 = 1（前两块合并了）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C2 | grep -c '^--$' || true")" "1"
+    chk "$sh：wrg -C0 等于不写（就是那 3 行命中、不打 --）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C0")" "$want7plain"
+    # 值分开写 / 贴在一起等价；后写的覆盖先写的
+    chk "$sh：wrg -A 1（值分开写）与 -A1 等价" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A 1")" "$want7a"
+    chk "$sh：wrg -C 2（值分开写）与 -C2 等价" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C 2")" "$want7c"
+    chk "$sh：wrg -C2 -A0：后写的 -A 覆盖 -C 设的那一边（就是 -B2 那份输出）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C2 -A0")" "$want7e"
+    chk "$sh：wrg -i ctx -B2 就是上面那份（锚定 -C2 -A0 的期望值）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -B2")" "$want7e"
+    chk "$sh：wrg -A2 -B1 是 14 行（锚定，免得两条都报错也算"一致"）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A2 -B1 | wc -l")" "14"
+    chk "$sh：wrg -A2 -B1 与 -C1 -A2 等价（C 设两边、A 再覆盖一边）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A2 -B1")" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -C1 -A2")"
+    # 上下文只影响显示：不改命中判定、排序、退出码
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg -i zzznosuch -A3; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -A3 不改退出码（没命中还是 rc=1 + 老提示）" "$out" \
+        "wrg: 没有匹配 'zzznosuch' 的目标名
+rc=1"
+    chk "$sh：wrg -A3 不改命中判定与排序（滤掉上下文后与不带 -A 逐字一致）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A3 | grep '^\./keep/Android\.bp:'")" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx")"
+    # 一行的两个文件之间也打 --（命中行与上下文行各自的形状不变）
+    chk "$sh：跨文件也打 --（-e 两个名字落在不同文件）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -e ctxa -e othertgt -A1")" \
+        './keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp-3-    srcs: ["a.c"],
+--
+./keep/Android.mk:1:LOCAL_MODULE := othertgt'
+
+    # ---- wrg：选项位置自由（wrg x -A3 == wrg -A3 x）----
+    chk "$sh：位置自由：wrg -A1 -i ctx（选项在前）就是 -A1 那份输出" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -A1 -i ctx")" "$want7a"
+    chk "$sh：位置自由：查询串后面写 -i 也算（wrg ctxa -i）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg ctxa -i")" \
+        './keep/Android.bp:2:    name: "ctxa",'
+    chk "$sh：位置自由：wrg -B 2 -i ctx（值分开写）就是 -B2 那份输出" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -B 2 -i ctx")" "$want7e"
+    chk "$sh：位置自由：wrg -A 2 ctx -i（值分开 + 选项夹着查询串）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -A 2 ctx -i")" "$want7d"
+    chk "$sh：布尔短选项可捆绑：-il 就是 -i -l 那份输出" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -il ctx")" "./keep/Android.bp"
+    chk "$sh：带值短选项可捆在后面：-ilA1 = -i -l -A1（-l 压过上下文）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -ilA1 ctx")" "./keep/Android.bp"
+    # -- 之后一律当查询串（即使以 - 开头）
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg -- -weird; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -- -weird：-weird 当查询串（rc=1 + 没有匹配）" "$out" \
+        "wrg: 没有匹配 '-weird' 的目标名
+rc=1"
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg -- --help; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -- --help：--help 当查询串，不打用法" "$out" \
+        "wrg: 没有匹配 '--help' 的目标名
+rc=1"
+    chk "$sh：wrg -- ctxa：-- 本身不算查询串，后面的照常搜" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -- ctxa")" \
+        './keep/Android.bp:2:    name: "ctxa",'
+    # 缺值 / 未知选项 / 多个位置参数 → rc 2 + 用法
+    for badopt in '-A' '-m' '-e' '-t' '--color' '--max-count'; do
+        rc=0
+        out=$(sh_eval "$sh" "cd '$T/src7'; wrg $badopt") || rc=$?
+        chk "$sh：wrg $badopt（缺值）：rc=2" "$rc" "2"
+        case $out in
+            *缺值*) ok "$sh：wrg $badopt（缺值）说了是缺值" ;;
+            *) bad "$sh：wrg $badopt（缺值）报错不清楚 [$out]" ;;
+        esac
+    done
+    for badopt in '-Z' '--zoo'; do
+        rc=0
+        out=$(sh_eval "$sh" "cd '$T/src7'; wrg $badopt x") || rc=$?
+        chk "$sh：wrg $badopt x（未知选项）：rc=2" "$rc" "2"
+        case $out in
+            *不认识的选项*) ok "$sh：wrg $badopt 说清是不认识的选项" ;;
+            *) bad "$sh：wrg $badopt 的报错不清楚 [$out]" ;;
+        esac
+        case $out in
+            *"Usage: wrg"*) ok "$sh：wrg $badopt 之后打了用法" ;;
+            *) bad "$sh：wrg $badopt 没打用法 [$out]" ;;
+        esac
+    done
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg a b") || rc=$?
+    chk "$sh：wrg a b（两个位置参数）：rc=2" "$rc" "2"
+    case $out in
+        *只认一个查询串*) ok "$sh：两个位置参数的报错说清了" ;;
+        *) bad "$sh：两个位置参数的报错不清楚 [$out]" ;;
+    esac
+
+    # ---- wrg：-t / --type（只搜某一类文件）----
+    chk "$sh：wrg -t bp：只搜 Android.bp（同名目标在 mk / Makefile 里也有）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg -t bp mkshared")" \
+        './keep/Android.bp:5:    name: "mkshared",'
+    chk "$sh：wrg -t mk：只搜 Android.mk" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg -t mk mkshared")" \
+        './keep/Android.mk:4:LOCAL_MODULE := mkshared'
+    chk "$sh：wrg -t make：只搜其它 Makefile" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg -t make mkshared")" \
+        './keep/Makefile:18:mkshared: dep'
+    chk "$sh：wrg -t bp,mk（逗号分隔）：两类都搜" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg -t bp,mk mkshared")" \
+        './keep/Android.bp:5:    name: "mkshared",
+./keep/Android.mk:4:LOCAL_MODULE := mkshared'
+    chk "$sh：wrg --type bp --type mk（重复的长选项）：也是并集" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg --type bp --type mk mkshared")" \
+        './keep/Android.bp:5:    name: "mkshared",
+./keep/Android.mk:4:LOCAL_MODULE := mkshared'
+    chk "$sh：wrg -tbp（值贴着写）也认" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg -tbp mkshared")" \
+        './keep/Android.bp:5:    name: "mkshared",'
+    chk "$sh：wrg --type=bp（长选项等号写法）也认" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg --type=bp mkshared")" \
+        './keep/Android.bp:5:    name: "mkshared",'
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src3'; wrg -t make mkandroidmod; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -t make：Android.mk 里的目标不算（make 类不含 Android.mk）" "$out" \
+        "wrg: 没有匹配 'mkandroidmod' 的目标名
+rc=1"
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src3'; wrg -t bp mkrule; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -t bp：Makefile 的规则行不算" "$out" \
+        "wrg: 没有匹配 'mkrule' 的目标名
+rc=1"
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src3'; wrg -t zzz mkshared") || rc=$?
+    chk "$sh：wrg -t zzz（类型不认）：rc=2" "$rc" "2"
+    case $out in
+        *"只认 bp / mk / make"*) ok "$sh：-t 取值不认的报错说清了" ;;
+        *) bad "$sh：-t 取值不认的报错不清楚 [$out]" ;;
+    esac
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/amonly'; wrg -t bp amtarget; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -t bp 在没有 .bp 的树里：提示语跟着类型走" "$out" \
+        "wrg: 当前目录树下没有 Android.bp
+rc=1"
+
+    # ---- wrg：-l / -c / -m / -e ----
+    chk "$sh：wrg -l：只打印命中的文件路径（同文件 3 个命中只出一行）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -l -i ctx")" "./keep/Android.bp"
+    chk "$sh：wrg -l：多文件去重 + 按路径排序" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -l -e ctxa -e othertgt")" \
+        "./keep/Android.bp
+./keep/Android.mk"
+    chk "$sh：wrg --files：长选项等价" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg --files -e ctxa -e othertgt")" \
+        "./keep/Android.bp
+./keep/Android.mk"
+    chk "$sh：wrg -c：每个文件的命中条数（路径:条数）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -c -i ctx")" "./keep/Android.bp:3"
+    chk "$sh：wrg -c：多文件也按路径排序" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -c -e ctxa -e othertgt")" \
+        "./keep/Android.bp:1
+./keep/Android.mk:1"
+    chk "$sh：wrg --count：长选项等价" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg --count -i ctx")" "./keep/Android.bp:3"
+    chk "$sh：wrg -lc：-l 压过 -c（和 grep -lc 一样只出行）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -lc -i ctx")" "./keep/Android.bp"
+    chk "$sh：wrg -m2：全局只出前 2 条命中（排序后的前 2 条）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -m2")" \
+        './keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp:7:    name: "ctxb",'
+    chk "$sh：wrg --max-count=1：只出第 1 条" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx --max-count=1")" \
+        './keep/Android.bp:2:    name: "ctxa",'
+    chk "$sh：wrg -m1 -A1：上下文只跟着留下来的那条命中" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -m1 -A1")" \
+        './keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp-3-    srcs: ["a.c"],'
+    chk "$sh：wrg -c -m1：计数只看留下的那条" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -c -i ctx -m1")" "./keep/Android.bp:1"
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -m0; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -m0（一条都不出）：rc=1 + 老提示" "$out" \
+        "wrg: 没有匹配 'ctx' 的目标名
+rc=1"
+    chk "$sh：wrg -e：多名字取并集" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -e ctxa -e ctxc")" \
+        './keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp:20:    name: "ctxc",'
+    chk "$sh：wrg --regexp：长选项等价" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg --regexp ctxa --regexp ctxc")" \
+        './keep/Android.bp:2:    name: "ctxa",
+./keep/Android.bp:20:    name: "ctxc",'
+    chk "$sh：wrg -e：其中一个没命中不影响另一个（rc=0）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -e ctxa -e zzznosuch; echo rc=\$?")" \
+        './keep/Android.bp:2:    name: "ctxa",
+rc=0'
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg -e zzznosuch -e yyyy; echo rc=\$?") || rc=$?
+    chk "$sh：wrg -e：全都没命中 → rc=1（消息用第一个查询串）" "$out" \
+        "wrg: 没有匹配 'zzznosuch' 的目标名
+rc=1"
+    chk "$sh：wrg -i -e：每个名字各做一次模糊" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i -e ctxa -e ctxc")" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -e ctxa -e ctxc")"
+    chk "$sh：wrg -i -e：截断过的那个打表头、没截断的不打（用户输入出现 1 次）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i -e vbmeta_systmmm -e metasystem | grep -c '用户输入' || true")" "1"
+
+    # ---- wrg：--color=WHEN（显式 always 压过 NO_COLOR；env 的 WRG_COLOR 不压）----
+    chk "$sh：--color=always：管道里也上色" \
+        "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; wrg --color=always ctxa")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31mctxa${esc}[0m\","
+    chk "$sh：--color=always 压过 NO_COLOR（rg 的语义）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; NO_COLOR=1; wrg --color=always ctxa")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31mctxa${esc}[0m\","
+    chk "$sh：env 的 WRG_COLOR=always 被 NO_COLOR 压过（和上一条方向相反）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; NO_COLOR=1; WRG_COLOR=always; wrg ctxa")" \
+        './keep/Android.bp:2:    name: "ctxa",'
+    chk "$sh：--color=never 压过 WRG_COLOR=always" \
+        "$(sh_eval "$sh" "cd '$T/src7'; WRG_COLOR=always; wrg --color=never ctxa")" \
+        './keep/Android.bp:2:    name: "ctxa",'
+    chk "$sh：--color never（值分开写）也认" \
+        "$(sh_eval "$sh" "cd '$T/src7'; WRG_COLOR=always; wrg --color never ctxa")" \
+        './keep/Android.bp:2:    name: "ctxa",'
+    chk "$sh：--color=auto 在管道里不上色（NO_COLOR 也压得住）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; wrg --color=auto ctxa | grep -c '$esc' || true")" "0"
+    chk "$sh：NO_COLOR + --color=auto：不上色" \
+        "$(sh_eval "$sh" "cd '$T/src7'; NO_COLOR=1; wrg --color=auto ctxa | grep -c '$esc' || true")" "0"
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src7'; wrg --color=zzz ctxa") || rc=$?
+    chk "$sh：--color=zzz（取值不认）：rc=2" "$rc" "2"
+    case $out in
+        *"--color 只认 auto / always / never"*) ok "$sh：--color 取值不认的报错说清了" ;;
+        *) bad "$sh：--color 取值不认的报错不清楚 [$out]" ;;
+    esac
+    chk "$sh：--color=always + -A1：命中行红粗、上下文行一个 ANSI 都没有（逐字节）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; wrg --color=always ctxa -A1")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31mctxa${esc}[0m\",
+./keep/Android.bp-3-    srcs: [\"a.c\"],"
+    chk "$sh：带上下文时管道里照样零 ANSI（grep -c ESC）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg -i ctx -A1 | grep -c '$esc' || true")" "0"
+
+    # ---- wrg：-h / -v ----
+    rc=0
+    out=$(sh_eval "$sh" "wrg -h") || rc=$?
+    chk "$sh：wrg -h：rc=0" "$rc" "0"
+    chk "$sh：wrg -h 第一行是用法的第一行" \
+        "$(sh_eval "$sh" "wrg -h | sed -n 1p")" "Usage: wrg [选项] <名字>"
+    rc=0
+    out=$(sh_eval "$sh" "wrg -v") || rc=$?
+    chk "$sh：wrg -v：rc=0" "$rc" "0"
+    case $out in
+        "wrg 1.0（后端 "*) ok "$sh：wrg -v 打版本 + 后端" ;;
+        *) bad "$sh：wrg -v 的输出不对 [$out]" ;;
+    esac
+    chk "$sh：位置自由：-h 写在查询串后面也认（rc=0）" \
+        "$(sh_eval "$sh" "cd '$T/src7'; wrg ctxa -h | sed -n 1p")" "Usage: wrg [选项] <名字>"
+
+    # ---- wrg：带上下文的输出在三后端之间逐字一致（cmp）----
+    wrg7_to () {   # <WRG_SEARCH 值> <输出文件> <wrg 参数...>：在 $T/src7 里跑
+        local v=$1 f=$2; shift 2
+        sh_eval "$sh" "cd '$T/src7'; WRG_SEARCH='$v'; wrg $*" > "$f"
+    }
+    wrg7_to find "$T/o7-ctx-find" -i ctx -A1 -B1
+    wrg7_to find "$T/o7-multi-find" -e ctxa -e othertgt -A1
+    wrg7_to find "$T/o7-tbp-find" -t bp -i ctx -C2
+    for v in auto fd rg; do
+        [ "$v" = fd ] && [ -z "$have_fd" ] && continue
+        [ "$v" = rg ] && [ "$have_rg" -eq 0 ] && continue
+        wrg7_to "$v" "$T/o7-ctx-$v" -i ctx -A1 -B1
+        wrg7_to "$v" "$T/o7-multi-$v" -e ctxa -e othertgt -A1
+        wrg7_to "$v" "$T/o7-tbp-$v" -t bp -i ctx -C2
+        if cmp -s "$T/o7-ctx-$v" "$T/o7-ctx-find" &&
+           cmp -s "$T/o7-multi-$v" "$T/o7-multi-find" &&
+           cmp -s "$T/o7-tbp-$v" "$T/o7-tbp-find"; then
+            ok "$sh：wrg（上下文夹具）WRG_SEARCH=$v 与 find 逐字一致（cmp：-A1 -B1 / 跨文件 -- / -t bp -C2）"
+        else
+            bad "$sh：wrg（上下文夹具）WRG_SEARCH=$v 与 find 不一致"
+        fi
+    done
+    chk "$sh：wrg（上下文夹具）管道里没有 ANSI（grep -c ESC）" \
+        "$(grep -c "$esc" "$T/o7-ctx-find" || true)" "0"
+    if [ "$have_rg" -eq 1 ] || [ -n "$have_fd" ]; then
+        c7_find=$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i ctx -A1 -B1")
+        chk "$sh：带上下文的着色输出：auto 与 find 逐字一致" \
+            "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; WRG_COLOR=always; wrg -i ctx -A1 -B1")" "$c7_find"
+        if [ "$have_rg" -eq 1 ]; then
+            chk "$sh：带上下文的着色输出：rg 与 find 逐字一致" \
+                "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; WRG_SEARCH=rg; WRG_COLOR=always; wrg -i ctx -A1 -B1")" "$c7_find"
+        fi
+        if [ -n "$have_fd" ]; then
+            chk "$sh：带上下文的着色输出：fd 与 find 逐字一致" \
+                "$(sh_eval "$sh" "cd '$T/src7'; unset NO_COLOR; WRG_SEARCH=fd; WRG_COLOR=always; wrg -i ctx -A1 -B1")" "$c7_find"
+        fi
+    fi
 done
 
 printf '\n%d 通过, %d 失败\n' "$pass" "$fail"

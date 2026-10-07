@@ -69,11 +69,11 @@
 | `this_is_not_wsl` | 与 `this_is_wsl` 相反 | 0/1 |
 | `win` | WSL：`wslpath -w .`；非 WSL：走 `_win_server`（见 4.4） | 0 / 1 |
 | `start <程序>` | 非 WSL 打 `only wsl support this` 返回 1；WSL 上 `powershell.exe -Command "Set-Location -Path \"$(win)\"; Start-Process $1"` | 0 / 1 |
-| `wrg <名字>` / `wrg -i <片段>` | 见 4.5 | 0 / 1 / 2 |
+| `wrg [选项] <名字>` | 见 4.5（选项位置自由；`-i` / `-e` / `-t` / `-A` / `-B` / `-C` / `-l` / `-c` / `-m` / `--color`） | 0 / 1 / 2 |
 
 内部辅助（不打算给人直接敲）：`_win_ip`、`_win_smb_shares`、`_win_server`、
-`_wrg_usage`、`_wrg_backend`、`_wrg_color`、`_wrg_re_escape`、`_wrg_re_us`、
-`_wrg_norm`、`_wrg_prefix`。
+`_wrg_usage`、`_wrg_version`、`_wrg_backend`、`_wrg_color`、`_wrg_re_escape`、`_wrg_re_us`、
+`_wrg_norm`、`_wrg_type_names`、`_wrg_fd_glob`、`_wrg_prefix`。
 
 ### 4.4 `win` 的服务器分支
 
@@ -97,63 +97,104 @@
 
 ### 4.5 `wrg`
 
-`wrg` 在当前目录树下按**构建目标名**找三类文件（4.5.1）。`-i` 切到模糊模式（4.5.3），
-否则精确（`==`）。三种搜索后端，**按顺序探测**，前一个没有才用下一个：
+`wrg` 在当前目录树下按**构建目标名**找三类文件（4.5.1）。默认**精确**匹配（`==`），
+`-i` 切到模糊模式（4.5.3）。**选项位置自由**：`wrg x -A3` 与 `wrg -A3 x` 等价。
+
+| 选项 | 语义 |
+|---|---|
+| `-i` / `--ignore-case` | 模糊匹配（4.5.3）；不写 = 精确 |
+| `-e <名字>` / `--regexp <名字>` | 多名字查询，可重复；等价于多个精确匹配**取并集**（配 `-i` 时每个名字各做一次模糊）。与位置参数可以混用 |
+| `-t <类型>` / `--type <类型>` | 只搜某一类文件：`bp` = Android.bp、`mk` = Android.mk、`make` = 其它 Makefile；可重复 / 逗号分隔（`-t bp,mk`）；不写 = 三类都搜 |
+| `-A <n>` / `--after-context <n>` | 命中行**之后** n 行也打印（格式见 4.5.4） |
+| `-B <n>` / `--before-context <n>` | 命中行**之前** n 行 |
+| `-C <n>` / `--context <n>` | 前后各 n 行（= `-A n -B n`）；`-A/-B/-C` 谁后写谁算 |
+| `-l` / `--files` | 只打印命中的**文件路径**（去重、排序、不着色）；压过 `-c`（同 `grep -lc`） |
+| `-c` / `--count` | 每个文件的命中条数，形状 `路径:条数`；**只列有命中的文件**（`grep -rc` 会连 0 条的文件一起列，这里不列） |
+| `-m <n>` / `--max-count <n>` | **全局**最多输出 n 条命中（排序后按输出顺序取前 n）；`-m 0` = 一条都不出（rc 1）。n 数的是**命中条数**，上下文行不算 |
+| `--color[=WHEN]` | `auto`（默认）/ `always` / `never`，CLI 这一层的开关（优先级见 4.5.2） |
+| `-h` / `--help` | 用法打 **stdout**，rc 0 |
+| `-v` / `--version` | `wrg 1.0（后端 rg）`，rc 0（后端取不到就打成 `?`） |
+
+**解析规则**（手写扫描，**不用 `getopts`**——POSIX 那套不认长选项，也做不到"选项写在查询串后面"）：
+
+1. 逐个参数扫；`--` 之后一律当位置参数（`wrg -- -weird` 查的就是 `-weird`；`wrg -- --help`
+   不会打用法，就是查 `--help`）；
+2. 短选项簇里布尔项就地吃掉（`-il` = `-i -l`）；碰到要值的短选项（`A B C m e t`）时，
+   **剩下的字符**就是值（`-ilA3` = `-i -l -A 3`），剩下的字符为空就吃掉下一个参数（`-A 3`）；
+3. 长选项 `--x=v` 与 `--x v` 都认；只有那几个"要值"的（`--color` / `--type` / `--max-count` /
+   `--context` / `--after-context` / `--before-context` / `--regexp`）允许带 `=`，
+   别的带 `=` 是 rc 2（`wrg --files=1` 报错）；
+4. 要值却没有 → stderr `wrg: 选项 -A 缺值` + 用法，rc 2；`-A/-B/-C/-m` 的值不是非负整数 →
+   `wrg: -A/--after-context 需要一个非负整数（现在是 x）` + 用法，rc 2；`-t` / `--color` 取值不认、
+   未知选项（`-Z` / `--zoo`）→ 都是 rc 2 + 用法；
+5. 位置参数**最多一个**（第二个 → rc 2 + `wrg: 只认一个查询串（多出来的：x；多个名字请用 -e）`）；
+   查询串总数为 0（`wrg`、`wrg -i`）→ rc 2 + 用法；查询串是空串 → rc 2。
+
+三种搜索后端，**按顺序探测**，前一个没有才用下一个：
 
 | 顺序 | 后端 | 怎么找到它 | 怎么搜 |
 |---|---|---|---|
-| 1 | rg | `command -v rg` | 三类文件各跑一次 `rg --no-heading --line-number --with-filename --color=never …`，输出合并后交给 `WRG_PASS=recheck` 的 awk 判命中 |
-| 2 | fd | `command -v fdfind` → `fd-find` → `fd`（第一个有的） | `<fd> -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}"`（`-X` = 批量 exec，等价于 `find … {} +`） |
-| 3 | find | 兜底，不用探 | `find . -type f \( -name Android.bp -o -name Android.mk -o -name Makefile -o -name makefile -o -name GNUmakefile -o -name '*.mk' -o -name '*.mak' \) -exec awk "${_WRG_AWK}" {} +` |
+| 1 | rg | `command -v rg` | 按 `-t` 选中的类各跑一次 `rg --no-heading --line-number --with-filename --color=never …`，输出合并后交给 `WRG_PASS=recheck` 的 awk 判命中 |
+| 2 | fd | `command -v fdfind` → `fd-find` → `fd`（第一个有的） | `<fd> -t f -g "<按 -t 拼出来的文件名 glob>" -X awk "${_WRG_AWK}"`（`-X` = 批量 exec，等价于 `find … {} +`） |
+| 3 | find | 兜底，不用探 | `find . -type f \( -name Android.bp -o … -o -name '*.mak' \) -exec awk "${_WRG_AWK}" {} +`（**谓词不跟着 `-t` 变**：多认的文件由 awk 的 kinds 掩码丢掉，免得三条后端各有一套文件集合） |
 
 - 后端选择：`WRG_SEARCH=auto`（默认，按上表探测）/ `rg` / `fd` / `find`。
   **指定了就一定用它**：`rg` / `fd` 找不到可执行文件 → stderr 报错、返回 **2**；
   取值不认 → 同样 2。`WRG_SEARCH` 只在 `wrg` 里读，不影响别的命令。
-- 判命中、抠目标名、枚举目标名、着色都在**同一段 awk**（`_WRG_AWK`，两处 `wrg` 的实现里
-  各存一份、逐字相同）里，三条后端共用，输出因此逐字一致：
+- 判命中、抠目标名、枚举目标名、着色、**上下文展开**都在**同一段 awk**（`_WRG_AWK`，
+  两个 env 文件里各存一份、**逐字相同**）里，三条后端共用，输出因此逐字一致：
   - `WRG_PASS=search`：读文件，按 4.5.1 的规则取候选目标名；命中就
     `print 路径 ":" FNR ":" $0`；
   - `WRG_PASS=recheck`：读 stdin 上的 `路径:行号:原文`，用同一套规则**重新判一遍**
     ——rg 的几套正则只是"粗筛"，最终判命中一定回到这里，所以三条后端不会各说各话；
   - `WRG_PASS=paint`：读同样形状的行，把命中段包成红粗、目标名里其余部分包成绿（见 4.5.2）；
+  - `WRG_PASS=ctx`：读同样形状的行（已排序），按 `-B/-A` 展开成带上下文的输出（见 4.5.4）；
   - `WRG_PASS=names`（读文件）/ `WRG_PASS=names3`（读 `路径:行号:原文`）：**只枚举**目标名
     （`take()` 进收集分支），`END` 里打印"实际匹配的前缀"（见 4.5.3）；
   - 路径归一化：`norm()` 给"既不是 `/` 开头、也不是 `./` 开头"的路径补 `./`
     （fd 直接打印时没有 `./`，加了 `-X` 才有；find 一直有 —— 归一化保证两条路形状一样）。
-- **先查有没有可搜文件**（这一步在枚举目标名之前，模糊/精确都一样）：
-  rg 用 `rg --files -g Android.bp -g Android.mk -g Makefile -g makefile -g GNUmakefile
-  -g '*.mk' -g '*.mak' .`；fd 用 `<fd> -t f -g "${_WRG_FD_GLOB}" | head -n 1`；
-  find 用同样的 `-name` 列表 + `-print -quit`。空 → stderr
-  `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`，返回 1
-  （`Makefile.am` / `Makefile.in` 不在集合里，只有它们的树算"没有可搜文件"）；
-- **rg 那条路**：三类文件各一次，查询串先做正则转义
+- 进 awk 的环境变量：`WRG_PAT`（查询串，**一行一个**，`-e` 给多个就是多行）、`WRG_FUZZY`、
+  `WRG_KINDS`（认哪几类文件，`1`/`2`/`3` 拼成的串，来自 `-t`）、`WRG_BEFORE` / `WRG_AFTER`
+  （上下文行数）、`WRG_COLOR_ON`、`WRG_PASS`。
+- **先查有没有可搜文件**（这一步在枚举目标名之前，模糊/精确都一样），文件集合**跟着 `-t` 走**：
+  rg 用 `rg --files` + 选中类的 `-g`；fd 用 `<fd> -t f -g "<选中的 glob>" | head -n 1`；
+  find 用同样按 `-t` 拼出来的 `-name` 列表 + `-print -quit`。空 → stderr
+  `wrg: 当前目录树下没有 <选中的那几类>`（三类都选时逐字就是老那句
+  `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`），返回 1
+  （`Makefile.am` / `Makefile.in` 不在集合里，只有它们的树算"没有可搜文件"）。
+  ⚠️ `-t make` 那一类的文件名集合里有 `*.mk`，所以"树里只有 Android.mk"时预检算**有**文件
+  （搜出来是 0 条，报"没有匹配"）—— 三条后端一致。
+- **rg 那条路**：按 `-t` 选中的类各一次（没选中的类整个不跑），查询串先做正则转义
   （`_wrg_re_escape`：把 `\ ^ $ . * + ? ( ) [ ] { } |` 变字面量），模糊时用 `_wrg_re_us` 换一套
-  （见 4.5.3）：
-  - `Android.bp`：`-g Android.bp` + `^[[:space:]]*name[[:space:]]*:[[:space:]]*"…"`；
+  （见 4.5.3）。**多个查询串合成一个 alternation**（`(a|b)`）粗筛一次，真判命中仍在 awk：
+  - `Android.bp`：`-g Android.bp` + `^[[:space:]]*name[[:space:]]*:[[:space:]]*"(…)"`；
   - `Android.mk`：`-g Android.mk` + `^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)…`，
     精确模式值后面必须跟 `([[:space:]#]|$)`；
   - 其它 Makefile：`--type amake --type make -g '!Android.bp' -g '!Android.mk'`
     （`amake` = `*.bp` / `*.mk`，`make` = `Makefile` / `*.mk` / `*.mak` 那一族；两套类型都会捎上
     Android 那两个文件，用 `!` glob 排掉，免得被 Makefile 语义再算一遍），粗筛正则 =
-    精确 `(^|[^[:alnum:]_])<值>([^[:alnum:]_]|$)`、模糊 `_wrg_re_us` 的结果
+    精确 `(^|[^[:alnum:]_])(…)([^[:alnum:]_]|$)`、模糊 `(?i:…)` 那套
     ——模糊那条**不能加词边界**（`-i system` 要能命中 `vbmetasystemimage`）；
   - 模糊模式只给"值"那段套 `(?i:...)`，关键词部分保持大小写敏感；rg 的退出码：
-    **1 = 没命中**（不是错误），> 1 才是错（三次里任意一次 > 1 就整体按错报）。
-- **fd 那条路**：fd 的 `-g` 是**开关**（不带参数），所有文件名合成**一个** glob
-  `{Android.bp,Android.mk,Makefile,makefile,GNUmakefile,*.mk,*.mak}`（`_WRG_FD_GLOB`）；
+    **1 = 没命中**（不是错误），> 1 才是错（跑过的几次里任意一次 > 1 就整体按错报）。
+- **fd 那条路**：fd 的 `-g` 是**开关**（不带参数），选中类的文件名合成**一个** glob
+  （`_wrg_fd_glob`，三类都选时 = `{Android.bp,Android.mk,Makefile,makefile,GNUmakefile,*.mk,*.mak}`）；
   fd 没命中时的退出码各版本不一样（9.0.0 给 0，有的给 1），实现里"空输出 + 1"当没命中。
 - **语义差异**（rg / fd 与 find 的）：rg / fd 默认**跳过隐藏目录和被 ignore 的目录**
   （`.repo/`、`out/` 这类），find 不跳 —— 所以整树更快，但那些目录里的目标搜不到。
   要连它们一起搜就用 `WRG_SEARCH=find`。模糊模式下这条差异还会影响**枚举**：
   隐藏目录里有个更长的匹配名字时，`find` 会选出更长（更贴）的前缀，
   rg / fd 看不到它 —— 树里没有隐藏目录时三者逐字一致。
-- 结果先 `sort -t: -k1,1 -k2,2n`（**纯文本**，ANSI 不参与排序键），
-  要上色时再过一个 `WRG_PASS=paint` 的 awk；
+- 结果先 `sort -t: -k1,1 -k2,2n`（**纯文本**，ANSI 不参与排序键），然后按这个顺序：
+  `-l` / `-c`（只看命中，不着色、不看上下文）→ `-m` 截前 n 条 → 要上色就过一个
+  `WRG_PASS=paint` 的 awk（**没有上下文时**，输出与加这些选项之前逐字一致）或
+  `WRG_PASS=ctx` 的 awk（**有上下文时**：展开 + 上色一趟做完，见 4.5.4）。
 - 输出非空就打印、返回 0；空 → stderr `wrg: 没有匹配 '<模式>' 的目标名`，返回 1
-  （**消息里用的始终是用户输入的原串**，不是截断后的前缀）；
-  后端非 0 → stderr `wrg: 搜索失败（<后端>/awk 退出码 <n>）`，返回 1
+  （**消息里用的始终是用户输入的原串**，不是截断后的前缀；`-e` 给了多个时用**第一个**查询串；
+  `-m 0` 也是这条）；后端非 0 → stderr `wrg: 搜索失败（<后端>/awk 退出码 <n>）`，返回 1
   （find 那条路是 `find/awk`，rg 那条路是 `rg`，fd 那条路是 `<fd>/awk`）；
-- 用法错误（选项不认、参数不是 1 个）→ 用法打 stderr，返回 2；`-h` / `--help` → 打 stdout，返回 0。
+- 用法错误（选项不认、缺值、位置参数不止一个、一个查询串都没有）→ 用法打 stderr，返回 2；
+  `-h` / `--help` → 打 stdout，返回 0；`-v` / `--version` → 打 stdout，返回 0。
 - 模糊模式**不检查枚举那一步的退出码**（那一步的输出只用来定前缀；真出错时后面那次搜索
   照样会报）。`bash` / `zsh` 取管道退出码的写法不一样（`PIPESTATUS` vs `pipestatus`），
   为了两份逐字等价就不取了。
@@ -167,6 +208,10 @@
 | 1 | `Android.bp` | `name: "X"` 引号里那段 | `^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*"` |
 | 2 | `Android.mk` | `LOCAL_MODULE` / `LOCAL_PACKAGE_NAME` 等号右边第一个词 | `^[[:space:]]*(LOCAL_MODULE\|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+` |
 | 3 | 其它 Makefile：`Makefile` / `makefile` / `GNUmakefile` / `*.mk`（`Android.mk` 除外）/ `*.mak` | 规则行冒号前那串**词**，外加 `.PHONY:` 声明的词 | 见下（`rule_prefix()` + `cand_make()`） |
+
+`-t/--type` 就是按这张表挑类别：`bp` = 类别 1、`mk` = 类别 2、`make` = 类别 3
+（`Android.mk` 属类别 2，`-t make` 时它**整个不参与**。判类别的 `kind()` 结果还要过
+`WRG_KINDS` 掩码，所以三条后端的文件集合不会各说各话）。
 
 **三类文件共用两条否决规则**（`cand_bp` / `cand_mk` / `rule_prefix` 里各有一份）：
 
@@ -239,15 +284,25 @@
   命中段长度由 `hit()` 写进全局 `hlen`；`paint` pass 里用 `length(v)` 定目标名结尾，
   两段绿分别是 `substr(ft, vs, o)` 与 `substr(ft, vs + o + hlen, length(v) - o - hlen)`。
 
-| 变量 | 作用 |
-|---|---|
-| `WRG_COLOR=auto`（默认） | 只有 stdout 是终端（`[ -t 1 ]`）才上色；管道 / 重定向是纯文本 |
-| `WRG_COLOR=always` / `never` | 强开 / 强关 |
-| `NO_COLOR` | **非空就永不上色** —— 优先级最高，压过 `WRG_COLOR=always` |
-| `WRG_COLOR` 取值不认 | stderr 报错，返回 2（和 `WRG_SEARCH` 一样，拼错不静默） |
+上色开关有两层：CLI 的 `--color=WHEN`（写了就以它为准）和 env 的 `WRG_COLOR`（默认 `auto`）。
+两层的语义**故意不一样**（rg 的口径）：
 
-内部变量（不是给人设的）：`WRG_PAT` / `WRG_FUZZY` / `WRG_PASS`（传给 awk 的模式、模式开关、
-pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glob）、
+| 情形 | 上色？ |
+|---|---|
+| `--color=always` | **是**，连 `NO_COLOR` 也压不过它（显式要求） |
+| `--color=never` | 否（`WRG_COLOR=always` 也压不过） |
+| `--color=auto`（或没写 `--color` 且 `WRG_COLOR=auto`） | 只有 stdout 是终端**且** `NO_COLOR` 为空才上色 |
+| 没写 `--color`、`WRG_COLOR=always` | 是（不看终端）；但 **`NO_COLOR` 非空 → 否** |
+| 没写 `--color`、`WRG_COLOR=never` | 否 |
+| `WRG_COLOR` 取值不认 | stderr `wrg: WRG_COLOR 只认 auto / always / never（现在是 x）`，返回 2 |
+| `--color=WHEN` 取值不认 | stderr `wrg: --color 只认 auto / always / never（现在是 x）` + 用法，返回 2 |
+
+一句话：**`--color=always` 压过 `NO_COLOR`，env 里的 `WRG_COLOR=always` 压不过**（两条方向
+相反的用例都钉在测试里）。命令行里的 `--color=always` 是"显式要求"，env 变量只是默认值。
+
+内部变量（不是给人设的）：`WRG_PAT`（查询串，一行一个）/ `WRG_FUZZY` / `WRG_PASS`
+（传给 awk 的模式、模式开关、pass 名）、`WRG_KINDS`（认哪几类，来自 `-t`）、
+`WRG_BEFORE` / `WRG_AFTER`（上下文行数）、`WRG_COLOR_ON`、`_WRG_AWK`（那段 awk 的正文）、
 `_WRG_RE_BP_NAME` / `_WRG_RE_MK_NAME` / `_WRG_RE_MAKE_NAME`（模糊枚举那一步的粗筛正则）。
 
 #### 4.5.3 `wrg -i` 的模糊匹配（2026-10-07 改）
@@ -278,8 +333,47 @@ pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glo
   都不打表头；`wrg -i vbmeta_systmmm` 打表头（实际匹配 `vbmetasyst`）；
 - 到最短长度仍无命中 → stderr `wrg: 没有匹配 '<用户输入>' 的目标名`，返回 1
   （不附"试到的最短前缀"那句，免得和既有报错文字分叉）；
+- **多个查询串（`-e`）时每个名字各算一次前缀**：`_wrg_prefix` 一行一个查询地调，
+  "取最长那行"的分批逻辑不动；算出来的前缀按顺序拼进 `WRG_PAT`（一行一个），
+  awk 里 `hit()` 按顺序取第一个命中的。某个名字一个都没枚举到 →
+  **只给它打一行 stderr 警告、跳过它**，其余名字照常搜（全都没枚举到才 rc 1，
+  这时输出与上面单名字那条逐字一样）；
+- 表头也是**每个名字三行**、按用户给的顺序打（截断过的才打）；
 - `-i` 之外的行为（精确匹配、后端选择、`WRG_COLOR` / `NO_COLOR`、排序、退出码）不变。
 
+#### 4.5.4 `wrg` 的上下文行（`-A` / `-B` / `-C`，2026-10-07 加）
+
+`-A n` 打命中行之后 n 行、`-B n` 打之前 n 行、`-C n` = 前后各 n 行；`-A/-B/-C` 谁后写谁算，
+`-C 0` 等于不写（走老那条 paint 路径，一行 `--` 都不打）。**它们只影响显示**：
+命中判定、排序、退出码、`-l` / `-c` 都不受影响（`-A3` 没命中还是 rc 1 + 老提示）。
+
+**输出格式照 grep / rg 的惯例**（字节形状）：
+
+| 行 | 形状 | 着色 |
+|---|---|---|
+| 命中行 | `路径:行号:原文` | 老规矩（4.5.2 分两段） |
+| 上下文行 | `路径-行号-原文`（两个冒号换成减号） | **不着色**（一个转义都不打） |
+| 块分隔 | 单独一行 `--` | 无 |
+
+- **块 = 合并后的窗口**：第 i 个命中的窗口是 `[行号-B, 行号+A]`（下界钳到 1），
+  两个窗口**重叠或相邻**（`lo <= 上一块的 hi + 1`）就并成一块 —— 同一行只打一次、也不多打 `--`；
+- `--` 只在**两块之间**打：一块里的行之间不打、**开头和结尾都不打**；跨文件也算两块
+  （`grep -A1 x a.txt b.txt` 就是文件之间打 `--`，实测对齐）。
+
+**实现层（关键约束）**：上下文**必须由共用那段 awk 算**，不能用 rg / grep 自带的
+`-A/-B` —— 它们三家的窗口语义、`--` 规则都不一致，而且模糊那条路要先枚举名字再匹配
+（自带上下文对不上"枚举出来的名字"）。做法是**单开一个 `ctx` pass**（`WRG_PASS=ctx`）：
+
+1. shell 侧照旧把命中行 `sort -t: -k1,1 -k2,2n`（`-m` 截断也在这之后、展开之前）；
+2. 排序过的命中行喂给 `ctx` pass；它按"路径相同"攒一批（排序保证同文件的命中连在一起）；
+3. 一批攒满（或 `END`）就 `flush()`：先把命中行号并成窗口块（上面的规则），
+   再 `getline < 路径` **逐行读回那个文件**，落在块里的行按"是不是命中行"分别打成
+   冒号 / 减号形状；命中行顺带按 4.5.2 上色（`WRG_COLOR_ON=1` 时），上下文行永不上色；
+   读完 `close()`（避免开一堆 fd），被删 / 读不到时退化成"只打命中行"；
+4. 输出天然就是"按路径 + 行号"排序的（命中行本来就是排好序的，块内逐行递增）。
+
+`WRG_PASS=paint`（没有上下文时）与 `ctx` pass 里的上色走的是同一套逻辑（都调 `cand()` +
+`hit()` 分两段），所以**加不加 `-A/-B/-C` 的命中行着色逐字一样**。
 
 ### 4.6 `start` 的补全
 
@@ -317,6 +411,9 @@ pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glo
 - wrg 的**模糊算法夹具**是第五棵树 `$T/src5`：`keep/Android.bp` 三个 `name:`
   （`vbmetasystem` / `vbmetasystem_ext` / `vbmeta_system_other`）+
   `keep/Makefile`（`.PHONY: vbmeta_system_mk` + `vbmeta_system_mk: dep` + 一条 TAB recipe）；
+- wrg 的**上下文夹具**是第七棵树 `$T/src7`：`keep/Android.bp` 22 行（行号钉着）——
+  `ctxa@2` / `ctxb@7` / `ctxc@20`，1..9 里第 4、5 行相邻（`-C2` 时前两块必须合并），
+  另有 `keep/Android.mk`（`othertgt@1`）用来验"跨文件也打 `--`"和 `-l` / `-c` 的多文件输出；
 - wrg 的**分两段着色夹具**是第六棵树 `$T/src6`：`keep/Android.bp` 四个 `name:`
   （`systemimage` / `vbmetasystemimage` / `systemimagesystemim` / `vbmetasystemim`，
   行号 2 / 6 / 10 / 14 钉着）—— 依次钉住"匹配段在中间（前 + 后都绿）"、
@@ -361,8 +458,47 @@ pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glo
   `-i 'libc.d'` 的 `.` 是字面量、**子串不锚定**（`-i metasystemim` 截成 `metasystem` 后命中
   `vbmetasystem`，表头逐字）、`WRG_COLOR=always` 只包住实际匹配那一段（含 `_` 的原文按原串下标）、`$T/src5` 上三后端 `cmp` 一致（截断带表头 + 归一 + 精确各一条）、
   管道零 ANSI、`rg` / `fd` 那条路能命中带 `_` 的名字；
+- **选项位置自由 + 新选项**（2026-10-07 加）：
+  ① 位置自由 —— `wrg -A1 -i ctx` / `wrg ctxa -i` / `wrg -B 2 -i ctx` / `wrg -A 2 ctx -i`
+  都对着**字面量期望值**比（不是"两条命令互相相等"，免得两条都报错也算过）、
+  `-il` / `-ilA1` 捆绑、`-tbp` 贴值、`--type=bp` 等号写法；
+  ② `--` 结束符 —— `wrg -- -weird` 与 `wrg -- --help` 都当查询串（rc 1 + 老提示，
+  **不打用法**）、`wrg -- ctxa` 照常命中；
+  ③ 缺值（`-A` / `-m` / `-e` / `-t` / `--color` / `--max-count`）rc 2 + 报"缺值"、
+  未知选项（`-Z` / `--zoo`）rc 2 + 报"不认识的选项" + 打用法、
+  多个位置参数（`wrg a b`）rc 2 + `只认一个查询串`；
+  ④ `-t`/`--type`：`bp` / `mk` / `make` 三类各只剩自己那一行（用 `$T/src3` 里
+  **三类文件同名的 `mkshared`** 钉）、`bp,mk` 逗号、重复 `--type`、
+  `-t make` 不认 Android.mk 的目标、`-t bp` 不认 Makefile 规则行、取值不认 rc 2、
+  "树里没有这一类"的提示语跟着类型走；
+  ⑤ `-l` / `-c`：同文件 3 个命中只出一行 / `路径:条数`、多文件按路径排序、
+  `-lc` 里 `-l` 压过 `-c`；
+  ⑥ `-m`：`-m2` 出前 2 条、`--max-count=1`、`-m1 -A1` 上下文只跟着留下的那条、
+  `-c -m1` 计数只看留下的那条、`-m0` → rc 1 + 老提示；
+  ⑦ `-e`：并集、`--regexp` 长选项、其中一个没命中不影响另一个（rc 0）、
+  全都没命中 rc 1、`-i -e` 每个名字各做一次模糊（截断过的那个打表头）；
+  ⑧ `--color`：`always` 在管道里上色、**`NO_COLOR` 压不过 `--color=always`**、
+  **`NO_COLOR` 压得过 env 的 `WRG_COLOR=always`**（方向相反的两条都钉着）、
+  `never` 压过 `WRG_COLOR=always`、`--color never` 分开写、`auto` 管道里不上色、
+  取值不认 rc 2 + 报错文字；
+  ⑨ `-h`（rc 0 + 第一行 `Usage: wrg [选项] <名字>`）、`-v`（rc 0 + `wrg 1.0（后端 …）`）、
+  `-h` 写在查询串后面也认；
+- **上下文行 `-A` / `-B` / `-C`**（`$T/src7`，2026-10-07 加）：
+  ① `-A1` / `-B1` / `-C2` 三份**逐字节**期望值（命中行冒号、上下文行减号、块之间 `--`）、
+  `-C2` 合并后 `sort | uniq -d` 为空且总行数 = 15（第 5、6 行只出现一次、只一个 `--`）、
+  `--` 条数 = 块数-1（不写 = 0 / `-A1` = 2 / `-C2` = 1）、
+  ② `-A 1` / `-C 2` 分开写等价、`-C2 -A0` 后写覆盖（等于 `-B2`，锚定到字面量）、
+  `-A2 -B1` = `-C1 -A2`（另有行数 = 14 锚定）、`-C0` 等于不写、
+  ③ 只影响显示：`-A3` 没命中还是 rc 1 + 老提示；滤掉上下文行后与不带 `-A` 逐字一致、
+  ④ 跨文件也打 `--`、带 `-A1` 的管道输出零 ANSI、`--color=always` 时命中行红粗而
+  上下文行一个转义都没有（逐字节）、
+  ⑤ `$T/src7` 上三后端 `cmp`（`-A1 -B1` / 跨文件 `-A1` / `-t bp -C2` 各一条）+
+  着色版本 auto / rg / fd 与 find 逐字一致；
+- **反向验证**（2026-10-07 实测）：这一批新用例拿 `git show HEAD:env.zsh|env.bash`
+  （改动前那份）跑，**150 条 FAIL**（新实现 499 通过 / 2 失败，那 2 条是本机
+  `win | head -1` 的破管道老毛病）；
 - 后端相关的用例按"本机有没有那个可执行文件"跳过，所以条数随环境变：
-  同一个夹具下实测 2026-10-07 **rg+fd 都在 = 299 通过**（另有 2 条本机 `win | head -1`
-  的破管道老毛病，与 wrg 无关）、只有 rg = 279、只有 fd = 273、都没有（纯 find）= 245，
-  四种情况的失败数都是那同样的 2 条；容器 `wrg-test` 里（非 WSL、没有 `ip`、mawk）
-  是 **297 通过 / 0 失败**（**以脚本最后一行输出为准**）。
+  同一个夹具下实测 2026-10-07（加完上下文与新选项之后）**rg+fd 都在 = 499 通过**
+  （另有 2 条本机 `win | head -1` 的破管道老毛病，与 wrg 无关）；
+  加这批之前是 299 通过 / 同样那 2 条失败；容器 `wrg-test` 里（非 WSL、没有 `ip`、mawk、
+  rg + fdfind）是 **497 通过 / 0 失败**（**以脚本最后一行输出为准**）。

@@ -2,6 +2,8 @@
 
 一组**和具体项目无关**的 shell 小工具：跳到 repo 工作区根、记路径再跳回来、WSL 的
 `win` / `start`、当前目录树下找 `Android.bp` / `Android.mk` / **Makefile** 目标名的 `wrg`
+（带 rg / grep 风格的选项：`-i` / `-e` / `-t` / `-A -B -C` 上下文行 / `-l` / `-c` / `-m` / `--color`，
+选项位置自由）
 （优先用 `rg` / `fd`，都没有才回退 `find`，命中的那段标红加粗），
 以及 `gs` / `gl` / `s` / `kls` 这类短别名。
 
@@ -184,10 +186,40 @@ start code         # 在 Windows 侧启动 VS Code
   `compdef _files start`；**只装本项目**（没有 compinit）时退回 `compctl -f start`。
   两条路都是补文件/目录名。
 
-#### `wrg <名字>` / `wrg -i <片段>` —— 找 Android.bp / Android.mk / Makefile 的目标名
+#### `wrg [选项] <名字>` —— 找 Android.bp / Android.mk / Makefile 的目标名
 
 在**当前目录树下**递归找三类文件里的目标名，输出
 `文件:行号:命中行`（按文件名、行号排序，可以直接喂给 `grep` / 编辑器跳转）：
+
+**选项**（全部可以写在查询串前面或后面，见下面"选项位置自由"）：
+
+| 选项 | 作用 |
+|---|---|
+| `-i` / `--ignore-case` | 模糊匹配（见下面「模糊匹配怎么算」）；不写 = 精确 |
+| `-e <名字>` / `--regexp <名字>` | 多名字查询，可重复；多个名字取**并集**（配 `-i` 就是每个名字各模糊一次） |
+| `-t bp` / `-t mk` / `-t make` | 只搜某一类文件：`bp` = Android.bp、`mk` = Android.mk、`make` = 其它 Makefile；可以写多次或用逗号（`-t bp,mk`）；不写 = 三类都搜 |
+| `-A <n>` / `-B <n>` / `-C <n>` | 命中行**之后 / 之前 / 前后各** n 行也打出来（`-C n` = `-A n -B n`；格式见下） |
+| `-l` / `--files` | 只打印**命中的文件路径**（去重、排序） |
+| `-c` / `--count` | 打印**每个文件的命中条数**（`路径:条数`） |
+| `-m <n>` / `--max-count <n>` | 全局最多输出 n 条命中（按排序后的顺序取前 n） |
+| `--color=auto|always|never` | 这一次运行的颜色开关（见下面「高亮」） |
+| `-h` / `--help` | 打用法，返回 0 |
+| `-v` / `--version` | 打版本和当前后端（例：`wrg 1.0（后端 rg）`），返回 0 |
+
+**选项位置自由** —— 下面三行完全等价（查询串在前在后都行，值可以贴着写也可以分开写）：
+
+```sh
+wrg system_image_defaults -A3
+wrg -A3 system_image_defaults
+wrg -A 3 system_image_defaults
+```
+
+- 布尔短选项可以**捆**在一起：`-il` = `-i -l`、`-ilA3` = `-i -l -A 3`；
+- 长选项 `--type=bp` 与 `--type bp` 都认；
+- `--` 之后一律当查询串：`wrg -- -weird` 就是查 `-weird`（`wrg -- --help` 不会弹用法）；
+- **位置参数只能有一个查询串**（`wrg a b` 报错、返回 **2**）；多个名字请用 `-e`；
+- 选项不认识（`wrg -Z x`）、要值没给（`wrg -A`）、`-A/-B/-C/-m` 的值不是非负整数：
+  用法打到 stderr，返回 **2**。
 
 | 文件 | 认的写法 |
 |---|---|
@@ -226,6 +258,35 @@ wrg -i vbmeta_systmmm
 > 但开头写错就没办法了。`_` 不算数：`wrg -i vbmeta_system` 和 `wrg -i vbmetasystem`
 > 是同一个键，`system_image_defaults` 这种带 `_` 的名字也照样命中。
 
+**上下文行（`-A` / `-B` / `-C`）**：照 grep / rg 的惯例 ——
+
+- 命中行还是 `文件:行号:原文`（照样高亮）；
+- 上下文行是 **`文件-行号-原文`**（两个冒号变减号），**不上色**；
+- 不相邻的两块之间打一行 `--`；重叠 / 相邻的块会**合并**（同一行只打一次、也不多打 `--`）；
+- 只影响显示：**命中判定、排序、退出码都不变**（`-C 0` 等于不写）。
+
+```sh
+wrg system_image_defaults -A3
+# ./build/make/target/product/generic/Android.bp:463:    name: "system_image_defaults",
+# ./build/make/target/product/generic/Android.bp-464-    module_type: "android_filesystem_defaults",
+# ./build/make/target/product/generic/Android.bp-465-    config_namespace: "ANDROID",
+# ./build/make/target/product/generic/Android.bp-466-    bool_variables: ["TARGET_ADD_ROOT_EXTRA_VENDOR_SYMLINKS"],
+# --
+# ./build/make/target/product/generic/Android.bp:481:    name: "system_image_defaults",
+# ./build/make/target/product/generic/Android.bp-482-    partition_name: "system",
+# ...
+```
+
+**只出文件 / 只数条数 / 限量 / 多名字**：
+
+```sh
+wrg -l systemimage             # ./build/make/core/Makefile
+wrg -c systemimage             # ./build/make/core/Makefile:5
+wrg -t bp -i image_defaults    # 只在 Android.bp 里模糊找
+wrg -e systemimage -e vbmeta -m 3   # 两个名字取并集，全局最多 3 条命中
+wrg -- -weird                  # -- 之后一律当查询串
+```
+
 **搜索后端**（按顺序探测，前一个没有才用下一个）：
 
 | 顺序 | 后端 | 说明 |
@@ -250,15 +311,17 @@ wrg -i vbmeta_systmmm
   模糊下同一个子串在一个名字里出现多次时，**只有第一处**是红粗，后面的算"没匹配到"（绿）；
 - 管道 / 重定向里不含任何颜色码。
 
+- `--color=auto` / `always` / `never`：**这一次运行**的开关（写命令行上）；不写就看 `WRG_COLOR`；
 - `WRG_COLOR=auto`（默认：只在 stdout 是终端时上色）/ `always` / `never`；
-- `NO_COLOR` **非空**时一律不上色（优先级最高，压过 `WRG_COLOR=always`）；
-- `WRG_COLOR` 写错了 → 报错、返回 2。
+- `NO_COLOR` **非空**时不上色 —— 它压得过 env 里的 `WRG_COLOR=always`，
+  但**压不过命令行里显式写的 `--color=always`**（和 ripgrep 的语义一样）；
+- `WRG_COLOR` / `--color` 写错了 → 报错、返回 2。
 
-- `-h` / `--help`：打用法并返回 0；
-- 参数不对/选项不认识：用法打到 stderr，返回 **2**；
-- 当前目录树下没有这三类文件：stderr 打
+- `-h` / `--help` / `-v` / `--version`：打 stdout 并返回 0；
+- 参数不对 / 选项不认识 / 缺值 / 位置参数不止一个：用法打到 stderr，返回 **2**；
+- 当前目录树下没有（选中的那几类）文件：stderr 打
   `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`，返回 1
-  （`Makefile.am` / `Makefile.in` 不算这三类）；
+  （`-t bp` 时就只说 `Android.bp`；`Makefile.am` / `Makefile.in` 不算这三类）；
 - 有这些文件但没有命中：stderr 打 `wrg: 没有匹配 '<模式>' 的目标名`，返回 1。
 
 ```sh
@@ -280,6 +343,14 @@ wrg -i vbmeta_systmmm
                      # ./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage
                      # ./build/make/core/main.mk:1384:vbmetasystemimage: …
                      #                          ↑ vbmetasyst 标红加粗、后面的 emimage 绿
+wrg systemimage -A3
+                     # ./build/make/core/Makefile:924:.PHONY: systemimage
+                     # ./build/make/core/Makefile:925:systemimage:      ← 相邻的两个命中并成一块
+                     # ./build/make/core/Makefile-926-                  ← 上下文行：减号、不上色
+                     # ./build/make/core/Makefile-927-# ------------------------------
+                     # --
+                     # ./build/make/core/Makefile:3623:systemimage: $(INSTALLED_SYSTEMIMAGE_TARGET)
+                     # ...
 ```
 
 > 注释里的目标名（`# LOCAL_MODULE := xxx`）不算；精确匹配不认前缀
@@ -332,9 +403,9 @@ wrg -i vbmeta_systmmm
 | `WIN_IP` | 非 WSL 上 `win` 的地址来源 | 设了就用它；没设才去 `ip -4 addr` 里找。取不到就报错让你去 `.bashrc` / `.zshrc` 里设它 |
 | `WTOOL_SMB_CONF` | 非 WSL 上 `win` 读哪个 samba 配置 | 默认 `/etc/samba/smb.conf`；测试用它注入假配置，不碰系统文件 |
 | `WRG_SEARCH` | `wrg` 用哪个搜索后端 | `auto`（默认：按 rg → fdfind/fd-find/fd → find 探测）/ `rg` / `fd` / `find`。指定了就必须存在，否则报错返回 2 |
-| `WRG_COLOR` | `wrg` 高亮开关 | `auto`（默认：只有 stdout 是终端才上色）/ `always` / `never`。写错返回 2 |
-| `NO_COLOR` | 通用约定，非空就关色 | 优先级最高：设了它，`WRG_COLOR=always` 也压不过 |
-| `WRG_PAT` / `WRG_FUZZY` / `WRG_PASS` | `wrg` 内部传给 awk 的模式、模式开关、pass 名 | 不是给人设的，别在 rc 里写 |
+| `WRG_COLOR` | `wrg` 高亮开关的**默认值** | `auto`（默认：只有 stdout 是终端才上色）/ `always` / `never`。命令行上的 `--color=…` 优先于它；写错返回 2 |
+| `NO_COLOR` | 通用约定，非空就关色 | 压得过 `WRG_COLOR=always`，但压不过命令行上显式的 `--color=always` |
+| `WRG_PAT` / `WRG_FUZZY` / `WRG_PASS` / `WRG_KINDS` / `WRG_BEFORE` / `WRG_AFTER` / `WRG_COLOR_ON` | `wrg` 内部传给 awk 的查询串、模式开关、pass 名、认哪几类文件、上下文行数、上色开关 | 不是给人设的，别在 rc 里写 |
 
 ## 快捷键
 
@@ -371,22 +442,29 @@ wrg -i vbmeta_systmmm
 | `wrg: WRG_SEARCH=fd 但 PATH 里没有 fdfind / fd-find / fd`（返回码 2） | 同上：装 `fd-find`（Ubuntu 里可执行名是 `fdfind`），或改回 `auto` |
 | `wrg: WRG_SEARCH 只认 auto / rg / fd / find（现在是 xxx）`（返回码 2） | 变量值拼错了（打错不会静默退回默认） |
 | `wrg: WRG_COLOR 只认 auto / always / never（现在是 xxx）`（返回码 2） | 同上 |
-| `wrg` 在管道 / 重定向里没有颜色 | 这是有意的：`WRG_COLOR=auto` 只在终端上色。要强制就 `WRG_COLOR=always` |
-| `wrg` 在终端里也没有颜色 | 看 `echo $NO_COLOR` —— 非空就一律不上色（它优先级最高） |
+| `wrg: --color 只认 auto / always / never（现在是 xxx）`（返回码 2） | 命令行上的 `--color=` 值拼错了；`--color` 后面没跟值也会 rc 2 |
+| `wrg: 选项 -A 缺值`（返回码 2） | `-A` / `-B` / `-C` / `-m` / `-e` / `-t` / `--color` 后面没跟值（选项写在最后了）。补上值：`-A 3` 或 `-A3` |
+| `wrg: -A/--after-context 需要一个非负整数（现在是 xxx）`（返回码 2） | `-A/-B/-C/-m` 的值只能是非负整数（不认 `-A -1`、`-A x`） |
+| `wrg: 只认一个查询串（多出来的：x；多个名字请用 -e）`（返回码 2） | 位置参数给了两个以上（`wrg a b`）。多名字要写成 `wrg -e a -e b` |
+| `wrg: -t/--type 只认 bp / mk / make（现在是 xxx）`（返回码 2） | `-t` 的类型拼错了；逗号分隔的每一项都要是这三个之一 |
+| `wrg -A3` 打出来的 `--` 是什么 | grep / rg 的块分隔符：两块不相邻的命中之间才有；重叠 / 相邻的块会合并，合并处不打 |
+| `wrg -A3` 里的上下文行为什么没有颜色 | 有意如此：只有命中行着色，上下文行（`文件-行号-原文`）永远是纯文本 |
+| `wrg -t make 名字` 搜不到 Android.mk 里的目标 | `-t make` 只表示"其它 Makefile"（`Makefile` / `*.mk` / `*.mak` …）；Android.mk 属 `-t mk` 那一类，两类都要就 `-t mk,make` |
+| `wrg` 在管道 / 重定向里没有颜色 | 这是有意的：`WRG_COLOR=auto` 只在终端上色。要强制就 `WRG_COLOR=always`（`NO_COLOR` 非空时得用 `--color=always`） |
+| `wrg` 在终端里也没有颜色 | 看 `echo $NO_COLOR` —— 非空就不上色（env 的 `WRG_COLOR=always` 也压不过它；命令行 `--color=always` 可以） |
 | 敲 `gs` 说 command not found | 这个 shell 的 rc 里没有 wtool 块 —— 项目没装，或者装完没重开 shell（`exec $SHELL`） |
 
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # rg + fd 都装了：299 通过 / 2 失败（那 2 条是 win 的老毛病，见下）；
-                           # 只有 rg：279；只有 fd：273；两个都没有（纯 find 兜底）：245
-                           # —— 都带同样的 2 条失败，以输出为准
+bash tests/env_test.sh     # rg + fd 都装了：499 通过 / 2 失败（那 2 条是 win 的老毛病，见下）
+                           # —— 条数随环境变（后端在不在、shell 在不在），以输出为准
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
 > ⚠️ 本机（WSL）上 `win | head -1` 那两条会因为 `head` 提前关掉管道、`echo` 报
 > `write error: Broken pipe` 而 FAIL（**和 wrg 无关、改动前就在**）；容器里
-> （`wrg-test`，非 WSL、没有 `ip`）同一份用例是 **297 通过 / 0 失败**。
+> （`wrg-test`，非 WSL、没有 `ip`、mawk）同一份用例是 **497 通过 / 0 失败**。
 
 它把**同一张用例表**喂给两个 shell：别名在不在、`_up_to_have_dir` / `cw` 能不能找到
 `.repo`、`pdd`/`pss` 能不能跳回来、`start` 的补全注册、`win` 的 WSL 分支**逐字等于**
@@ -403,7 +481,7 @@ bash tests/env_test.sh     # rg + fd 都装了：299 通过 / 2 失败（那 2 �
 强制指定但可执行不存在（rc=2）、高亮（管道里 `grep -c ESC` = 0、`WRG_COLOR=always` 的
 精确字节、模糊只包住"实际匹配"的那一段、`NO_COLOR` 压过 `always`、pty 下自动上色）、
 以及"隐藏目录里 rg/fd 搜不到、find 搜得到"这条语义差异；
-再加三组 2026-10-07 新钉的：**假阳性**（`$T/src4`：TAB/空格缩进的 recipe、`define` 体、
+再加五组 2026-10-07 新钉的：**假阳性**（`$T/src4`：TAB/空格缩进的 recipe、`define` 体、
 `$(info …)`、注释、`VAR :=`、`export A :=`、TAB 缩进的目标形状行 —— 每条都精确 + 模糊
 各断言一遍"不命中"，同时断言真目标照旧命中、输出里 `grep -c '@echo'` = 0）、
 **新模糊算法**（`$T/src5`：截断到 `vbmetasyst` 的三行表头逐字、表头第一行保留用户写的 `_`、
@@ -412,11 +490,22 @@ bash tests/env_test.sh     # rg + fd 都装了：299 通过 / 2 失败（那 2 �
 **分两段着色**（`$T/src6`：`-i ystemim` 四行的完整 ANSI 字节 —— 匹配段在中间（前后都绿）、
 同一子串出现两次时只有第一处红、匹配段正好在结尾时没有后段绿码；外加"精确模式整名红粗、
 一个绿码都没有"、"模糊整名命中也没有绿段"、管道零 ANSI、`NO_COLOR` 压过 `always`、
-auto / rg / fd 与 find 的着色输出逐字一致）。
+auto / rg / fd 与 find 的着色输出逐字一致）、
+**选项位置自由 + 新选项**（`wrg -A1 -i ctx` / `wrg ctxa -i` / `wrg -B 2 -i ctx` /
+`wrg -A 2 ctx -i` 都对着字面量比、`-il` / `-ilA1` 捆绑、`-tbp` 贴值、`--type=bp`；
+`--` 结束符（`wrg -- -weird`、`wrg -- --help` 当查询串不打用法）；缺值 / 未知选项 /
+多个位置参数都是 rc 2 + 报错；`-t` 只看 `bp`/`mk`/`make` 中的一类（用三类同名的
+`mkshared` 钉）、`-l` / `-c` / `-lc` / `-m` / `-e` / `--regexp` 各自的字节；
+`--color=always` 压过 `NO_COLOR`、env 的 `WRG_COLOR=always` 被 `NO_COLOR` 压过
+（方向相反的两条）、`-h` / `-v`）和
+**上下文行**（`$T/src7`：`-A1` / `-B1` / `-C2` 三份逐字节期望值、`-C2` 的重叠块合并
+（`sort | uniq -d` 为空、总行数 15）、`--` 条数、值分开/贴合等价、后写覆盖先写、
+`-C0` 等于不写、只影响显示不改退出码、跨文件也打 `--`、上下文行永不着色、
+三后端 `cmp`（纯文本 + 着色））。
 
 > 用例表是共用的，**每加一条两个 shell 都会跑**；后端相关的用例按"本机有没有那个
 > 可执行文件"跳过，所以数字会随环境变 —— 以脚本最后打印的那一行为准
-> （改造前是 67 条）。
+> （2026-10-07 加这一批之前是 299 通过 / 2 失败）。
 
 ## 文件
 
