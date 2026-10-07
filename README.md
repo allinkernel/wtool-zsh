@@ -1,7 +1,7 @@
 # shell/zsh —— 个人 shell 别名与函数集合
 
 一组**和具体项目无关**的 shell 小工具：跳到 repo 工作区根、记路径再跳回来、WSL 的
-`win` / `start`、当前目录树下找 `Android.mk` / `Android.bp` 目标名的 `wrg`
+`win` / `start`、当前目录树下找 `Android.bp` / `Android.mk` / **Makefile** 目标名的 `wrg`
 （优先用 `rg` / `fd`，都没有才回退 `find`，命中的那段标红加粗），
 以及 `gs` / `gl` / `s` / `kls` 这类短别名。
 
@@ -184,15 +184,16 @@ start code         # 在 Windows 侧启动 VS Code
   `compdef _files start`；**只装本项目**（没有 compinit）时退回 `compctl -f start`。
   两条路都是补文件/目录名。
 
-#### `wrg <名字>` / `wrg -i <片段>` —— 找 Android 构建目标名
+#### `wrg <名字>` / `wrg -i <片段>` —— 找 Android.bp / Android.mk / Makefile 的目标名
 
-在**当前目录树下**递归找 `Android.mk` / `Android.bp` 里的目标名，输出
+在**当前目录树下**递归找三类文件里的目标名，输出
 `文件:行号:命中行`（按文件名、行号排序，可以直接喂给 `grep` / 编辑器跳转）：
 
 | 文件 | 认的写法 |
 |---|---|
-| `Android.mk` | `LOCAL_MODULE := xxx` / `LOCAL_PACKAGE_NAME := xxx`（`:=` 或 `=`，行首可以有空白） |
 | `Android.bp` | `name: "xxx"` |
+| `Android.mk` | `LOCAL_MODULE := xxx` / `LOCAL_PACKAGE_NAME := xxx`（`:=` 或 `=`，行首可以有空白） |
+| 其它 Makefile：`Makefile` / `makefile` / `GNUmakefile` / `*.mk`（`Android.mk` 除外）/ `*.mak` | **构建目标名**：规则行 `目标 目标: 依赖` 冒号前那串词（不含 `=` `$` `#`），外加 `.PHONY: 目标 …` 声明的那些词 —— 一行里有多个目标就逐个算 |
 
 | 用法 | 匹配方式 |
 |---|---|
@@ -203,7 +204,7 @@ start code         # 在 Windows 侧启动 VS Code
 
 | 顺序 | 后端 | 说明 |
 |---|---|---|
-| 1 | `rg`（ripgrep） | 最快；`Android.mk` / `Android.bp` 两种写法各搜一次再合并 |
+| 1 | `rg`（ripgrep） | 最快；三类文件各搜一次（Makefile 那类用 `--type amake --type make`）再合并，最后统一判命中 |
 | 2 | `fd`（`fdfind` → `fd-find` → `fd`，探到哪个用哪个） | `fd` 列文件、`awk` 判命中 |
 | 3 | `find` | 兜底：没有 rg / fd 时就是它，行为与本项目以前的版本**逐字一致** |
 
@@ -212,6 +213,7 @@ start code         # 在 Windows 侧启动 VS Code
 - ⚠️ **`rg` / `fd` 会跳过隐藏目录和被 ignore 的目录**（`.repo/`、`out/` 这类），`find` 不会 ——
   所以前两条快得多，但那两个目录里的目标搜不到；
   要"连 `.repo/` 一起搜"（找回 `find` 的老行为）就用 `WRG_SEARCH=find`。
+- 三条后端 + 两个 shell 的输出**逐字一致**（测试里用 `cmp` 钉着）。
 
 **高亮**：命中的**那一段**（精确 = 整个目标名；模糊 = 名字里命中的子串）在终端里是
 **加粗红**；管道 / 重定向里不含任何颜色码。
@@ -222,19 +224,27 @@ start code         # 在 Windows 侧启动 VS Code
 
 - `-h` / `--help`：打用法并返回 0；
 - 参数不对/选项不认识：用法打到 stderr，返回 **2**；
-- 当前目录树下没有 `Android.mk` / `Android.bp`：stderr 打
-  `wrg: 当前目录树下没有 Android.mk / Android.bp`，返回 1；
-- 有这两种文件但没有命中：stderr 打 `wrg: 没有匹配 '<模式>' 的目标名`，返回 1。
+- 当前目录树下没有这三类文件：stderr 打
+  `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`，返回 1
+  （`Makefile.am` / `Makefile.in` 不算这三类）；
+- 有这些文件但没有命中：stderr 打 `wrg: 没有匹配 '<模式>' 的目标名`，返回 1。
 
 ```sh
 wrg libfoo           # ./foo/Android.mk:3:LOCAL_MODULE := libfoo    ← libfoo 标红加粗
 wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标红加粗
                      # ./foo/Android.mk:8:LOCAL_PACKAGE_NAME := FooApp
+wrg systemimage      # ./build/make/core/Makefile:924:.PHONY: systemimage
+                     # ./build/make/core/Makefile:925:systemimage:  ← systemimage 标红加粗
 ```
 
 > 注释里的目标名（`# LOCAL_MODULE := xxx`）不算；精确匹配不认前缀
 > （`wrg lib` 不会命中 `libfoo`）；目标名里的 `.` `+` 这类符号按**字面量**算
 > （`wrg 'liba+b'` 不会命中 `libaaab`）。
+>
+> Makefile 里这几类**不算**目标名：赋值（`VAR := x`、`VAR ?= x`、`export A := b`）、
+> `ifeq (...)` / `include $(...)` 这种带 `$` 的行、`$(MKTARGET): dep` 这种目标里带 `$` 的规则行、
+> `# 注释: 里的冒号`。`Android.mk` 只按 `LOCAL_MODULE` / `LOCAL_PACKAGE_NAME` 认，
+> 它里面的规则行**不算**（否则同一个目标会被两套语义各算一遍）。
 
 ---
 
@@ -292,8 +302,9 @@ wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标�
 | `win: 读不到 samba 配置 /etc/samba/smb.conf` | 这台机器没装/没配 samba。要么装上并配 `[share]` + `path =`，要么临时 `WTOOL_SMB_CONF=<别的文件>`；scp 那一行照样会给 |
 | `win: /etc/samba/smb.conf 里没有 share 的 path 匹配 <目标>` | 当前目录不在任何 share 的 `path` 下面（或 share 的 path 写的是软链/相对路径）。`testparm` 看一眼 samba 实际认的 path；scp 那一行照样会给 |
 | `win` 在非 WSL 上只打了 scp 一行、返回 1 | 这就是"samba 那半没算出来"，看上面两条的 stderr；scp 行是可以直接用的 |
-| `wrg: 当前目录树下没有 Android.mk / Android.bp`（返回码 1） | 站错目录了（`wrg` 只看当前目录往下）；`cd` 到源码树根部再跑。用 rg / fd 时它们跳过的目录（`.repo/`、`out/`）里即使有也不算 |
-| `wrg: 没有匹配 'xxx' 的目标名`（返回码 1） | 精确模式要求名字完全一样（区分大小写）；想按片段找就 `wrg -i 片段` |
+| `wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile`（返回码 1） | 站错目录了（`wrg` 只看当前目录往下）；`cd` 到源码树根部再跑。用 rg / fd 时它们跳过的目录（`.repo/`、`out/`）里即使有也不算。只有 `Makefile.am` / `Makefile.in` 的树也算"没有"（它们不在文件集合里） |
+| `wrg: 没有匹配 'xxx' 的目标名`（返回码 1） | 精确模式要求名字完全一样（区分大小写）；想按片段找就 `wrg -i 片段`。Makefile 里只认**目标名**：赋值（`VAR := x`）、`ifeq`、依赖列表里的名字都不算 |
+| `wrg` 在 Makefile 里搜 `systemimage_intermediates` 没结果 | 它多半是**变量**（`systemimage_intermediates :=$= …`）而不是目标 —— 赋值按规则就不算目标名 |
 | `wrg` 搜不到 `.repo/` 或 `out/` 里的目标 | 默认后端是 rg / fd，它们跳过隐藏目录与被 ignore 的目录。要连这些一起搜：`WRG_SEARCH=find wrg 名字` |
 | `wrg: WRG_SEARCH=rg 但 PATH 里没有 rg`（返回码 2） | 强制指定了 `rg` 却装没装/不在 PATH 里。装 ripgrep，或者 `WRG_SEARCH=auto` 让它自己挑 |
 | `wrg: WRG_SEARCH=fd 但 PATH 里没有 fdfind / fd-find / fd`（返回码 2） | 同上：装 `fd-find`（Ubuntu 里可执行名是 `fdfind`），或改回 `auto` |
@@ -306,8 +317,8 @@ wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标�
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # rg + fd 都装了：129 条；只有 rg：121；只有 fd：115；
-                           # 两个都没有（纯 find 兜底）：105 —— 以输出为准
+bash tests/env_test.sh     # rg + fd 都装了：199 条；只有 rg：185；只有 fd：179；
+                           # 两个都没有（纯 find 兜底）：161 —— 以输出为准
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
@@ -320,7 +331,8 @@ bash tests/env_test.sh     # rg + fd 都装了：129 条；只有 rg：121；只
 `wrg` 那一段是重点：老行为（精确/模糊/注释/空目录/用法）之外，还比
 **三条后端在同一个夹具上的输出逐字一致**（`WRG_SEARCH=auto|fd|rg` vs `find`，`cmp` 比对，
 模糊 + 精确两种模式）、元字符当字面量（`liba+b` 不命中 `libaaab`）、每条后端的
-"没有命中 / 树下没有这两种文件"、后端探测顺序（用只有一个可执行名的假 `PATH`）、
+"没有命中 / 树下没有这三类文件 / 只有 `Makefile.am` 也算没有 / 只有 `Makefile` 也搜得到"、
+后端探测顺序（用只有一个可执行名的假 `PATH`）、
 强制指定但可执行不存在（rc=2）、高亮（管道里 `grep -c ESC` = 0、`WRG_COLOR=always` 的
 精确字节、`NO_COLOR` 压过 `always`、pty 下自动上色）、以及"隐藏目录里 rg/fd 搜不到、
 find 搜得到"这条语义差异。

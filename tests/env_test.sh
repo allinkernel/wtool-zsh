@@ -76,6 +76,46 @@ cc_library {
 }
 EOF
 
+# wrg 第三类文件（Makefile 构建目标）的夹具：$T/src3。
+# 一棵树里三类文件都有，用来比三条后端；Makefile 的行号被断言钉着，改动要连用例一起改。
+mkdir -p "$T/src3/keep"
+cat > "$T/src3/keep/Makefile" <<'EOF'
+# mkfix: comment targets are not targets
+LOCAL_PATH := $(call my-dir)
+VAR := mkvarname
+VAR ?= mkqname
+ifeq ($(strip $(MKTARGETS)),)
+endif
+ifeq (nomkcolon,plain)
+endif
+.PHONY: mkphony1 mkphony2
+mkrule:
+	@echo hi
+mkrule2 mkrule3: $(deps)
+	@echo hi
+$(MKTARGET): dep
+mkslash/out.bin: dep
+# mkcommented: x
+mkmulti: dep1 dep2
+mkshared: dep
+EOF
+printf 'gnumk:\n\t@echo hi\n' > "$T/src3/keep/GNUmakefile"
+printf 'lowmk:\n\t@echo hi\n' > "$T/src3/keep/makefile"
+printf 'extramk:\n\t@echo hi\n' > "$T/src3/keep/extra.mk"
+printf 'makmk:\n\t@echo hi\n' > "$T/src3/keep/other.mak"
+# Android.mk 里故意放一条"只有 Makefile 语义才认"的规则行（mkandroidrule）：
+# Android.mk 不归 Makefile 语义管，它必须搜不到 —— 被两套语义各算一遍的话这里就露馅
+printf 'LOCAL_MODULE := mkandroidmod\nmkandroidrule:\n\t@echo hi\nLOCAL_MODULE := mkshared\n' \
+    > "$T/src3/keep/Android.mk"
+printf 'cc_library {\n    name: "mkbpname",\n}\ncc_library {\n    name: "mkshared",\n}\n' \
+    > "$T/src3/keep/Android.bp"
+
+# 只有 Makefile 的树（Makefile 单独也算"有可搜文件"）；
+# 只有 Makefile.am 的树（Makefile.am 不在文件集合里 → 仍旧算"没有可搜文件"）
+mkdir -p "$T/mkonly" "$T/amonly"
+printf 'mkonly:\n\t@echo hi\n' > "$T/mkonly/Makefile"
+printf 'amtarget:\n\t@echo hi\n' > "$T/amonly/Makefile.am"
+
 # wrg 后端探测的夹具：一堆只有一个可执行名的假 PATH（内容为空也行，探测只看命令在不在）
 mkdir -p "$T/bin-rg" "$T/bin-fdfind" "$T/bin-fd-find" "$T/bin-fd" "$T/bin-none"
 for c in rg fdfind fd-find fd; do : > "$T/bin-$c/$c"; chmod +x "$T/bin-$c/$c"; done
@@ -278,9 +318,9 @@ $(whoami)@10.1.2.3:$target"
     chk "$sh：wrg 精确匹配不认前缀（lib 不命中 libfoo）" "$rc" "1"
     rc=0
     out=$(sh_eval "$sh" "cd '$T/empty'; wrg libfoo") || rc=$?
-    chk "$sh：wrg 在没有这两种文件的目录：退出码 1，不炸" "$rc" "1"
+    chk "$sh：wrg 在没有这三类文件的目录：退出码 1，不炸" "$rc" "1"
     case $out in
-        *"没有 Android.mk / Android.bp"*) ok "$sh：wrg 说清了当前树下没有这两种文件" ;;
+        *"没有 Android.bp / Android.mk / Makefile"*) ok "$sh：wrg 说清了当前树下没有这三类文件" ;;
         *) bad "$sh：wrg 的提示不清楚 [$out]" ;;
     esac
     rc=0
@@ -328,18 +368,123 @@ $(whoami)@10.1.2.3:$target"
             './keep/Android.bp:6:    name: "libc.d",'
     fi
 
-    # 每条后端的边界：无命中 → 1 + 提示；树下没有这两种文件 → 1 + 提示
+    # 每条后端的边界：无命中 → 1 + 提示；树下没有这三类文件 → 1 + 提示
     for v in find fd rg; do
         case $v in fd) [ -n "$have_fd" ] || continue ;; rg) [ "$have_rg" -eq 1 ] || continue ;; esac
         chk "$sh：wrg（$v 后端）没有命中：rc=1 + 提示" \
             "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH='$v'; wrg libnosuch; echo rc=\$?")" \
             "wrg: 没有匹配 'libnosuch' 的目标名
 rc=1"
-        chk "$sh：wrg（$v 后端）树下没有这两种文件：rc=1 + 提示" \
+        chk "$sh：wrg（$v 后端）树下没有这三类文件：rc=1 + 提示" \
             "$(sh_eval "$sh" "cd '$T/empty'; WRG_SEARCH='$v'; wrg libnosuch; echo rc=\$?")" \
-            "wrg: 当前目录树下没有 Android.mk / Android.bp
+            "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile
+rc=1"
+        chk "$sh：wrg（$v 后端）只有 Makefile.am：也算没有可搜文件" \
+            "$(sh_eval "$sh" "cd '$T/amonly'; WRG_SEARCH='$v'; wrg amtarget; echo rc=\$?")" \
+            "wrg: 当前目录树下没有 Android.bp / Android.mk / Makefile
 rc=1"
     done
+    # 只有 Makefile 的树：新文件集合真的算数（不靠 Android.* 也能搜）
+    for v in find fd rg; do
+        case $v in fd) [ -n "$have_fd" ] || continue ;; rg) [ "$have_rg" -eq 1 ] || continue ;; esac
+        chk "$sh：wrg（$v 后端）树里只有 Makefile 也搜得到" \
+            "$(sh_eval "$sh" "cd '$T/mkonly'; WRG_SEARCH='$v'; wrg mkonly")" \
+            "./Makefile:1:mkonly:"
+    done
+
+    # ---- wrg：第三类文件 —— Makefile 的构建目标名（$T/src3）----
+    chk "$sh：wrg Makefile 规则行的目标（冒号前那串词）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkrule")" \
+        './keep/Makefile:10:mkrule:'
+    chk "$sh：wrg Makefile 多目标行：冒号前每个词都算（第二个）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkrule3")" \
+        './keep/Makefile:12:mkrule2 mkrule3: $(deps)'
+    chk "$sh：wrg Makefile 精确匹配不认前缀（mkrule 不命中 mkrule2/3）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkrule | grep -c mkrule || true")" "1"
+    chk "$sh：wrg .PHONY 声明的目标算（第二个词）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkphony2")" \
+        './keep/Makefile:9:.PHONY: mkphony1 mkphony2'
+    chk "$sh：wrg .PHONY 行里冒号前的 .PHONY 本身也是目标" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg .PHONY")" \
+        './keep/Makefile:9:.PHONY: mkphony1 mkphony2'
+    chk "$sh：wrg 目标名带 / 的也算（路径形状的目标）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkslash/out.bin")" \
+        './keep/Makefile:15:mkslash/out.bin: dep'
+    chk "$sh：wrg 三类文件混在一棵树里：同名的都命中、按路径排序" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkshared")" \
+        './keep/Android.bp:5:    name: "mkshared",
+./keep/Android.mk:4:LOCAL_MODULE := mkshared
+./keep/Makefile:18:mkshared: dep'
+    chk "$sh：wrg 认 GNUmakefile" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg gnumk")" './keep/GNUmakefile:1:gnumk:'
+    chk "$sh：wrg 认小写 makefile" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg lowmk")" './keep/makefile:1:lowmk:'
+    chk "$sh：wrg 认 *.mk" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg extramk")" './keep/extra.mk:1:extramk:'
+    chk "$sh：wrg 认 *.mak" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg makmk")" './keep/other.mak:1:makmk:'
+    chk "$sh：wrg Android.mk 里的 LOCAL_MODULE 照旧算" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkandroidmod")" \
+        './keep/Android.mk:1:LOCAL_MODULE := mkandroidmod'
+    chk "$sh：wrg 同一个目标只出现一次（Android.mk 不被两套语义各算一遍）" \
+        "$(sh_eval "$sh" "cd '$T/src3'; wrg mkandroidmod | wc -l")" "1"
+    rc=0
+    out=$(sh_eval "$sh" "cd '$T/src3'; wrg mkandroidrule; echo rc=\$?") || rc=$?
+    chk "$sh：wrg Android.mk 里的规则行不算目标（Android.mk 不归 Makefile 语义管）" "$out" \
+        "wrg: 没有匹配 'mkandroidrule' 的目标名
+rc=1"
+
+    # 反例：赋值（VAR := / VAR ?=）、ifeq（有 $ / 没有 $）、注释里的冒号、$ 变量目标
+    # 都不能被当成目标名 —— 这是新规则最容易出错的地方
+    for probe in 'mkvarname|VAR := 赋值' 'mkqname|VAR ?= 赋值' 'mkcommented|# 注释里的冒号' \
+                 'MKTARGET|$(MKTARGET): 这种变量目标' 'nomkcolon|ifeq（没有 $）' \
+                 'MKTARGETS|ifeq（里面有 $）'; do
+        pname=${probe%%|*}; pwhat=${probe#*|}
+        rc=0
+        out=$(sh_eval "$sh" "cd '$T/src3'; wrg -i '$pname'; echo rc=\$?") || rc=$?
+        chk "$sh：wrg 不把 $pwhat 当目标（$pname）" "$out" \
+            "wrg: 没有匹配 '$pname' 的目标名
+rc=1"
+    done
+
+    # Makefile 夹具上的三后端一致性（cmp）+ 着色一致性
+    wrg3_to () {   # <WRG_SEARCH 值> <输出文件> <wrg 参数...>：在 $T/src3 里跑
+        local v=$1 f=$2; shift 2
+        sh_eval "$sh" "cd '$T/src3'; WRG_SEARCH='$v'; wrg $*" > "$f"
+    }
+    wrg3_to find "$T/o3-fuzzy-find" -i mkrule
+    wrg3_to find "$T/o3-exact-find" mkshared
+    for v in auto fd rg; do
+        [ "$v" = fd ] && [ -z "$have_fd" ] && continue
+        [ "$v" = rg ] && [ "$have_rg" -eq 0 ] && continue
+        wrg3_to "$v" "$T/o3-fuzzy-$v" -i mkrule
+        wrg3_to "$v" "$T/o3-exact-$v" mkshared
+        if cmp -s "$T/o3-fuzzy-$v" "$T/o3-fuzzy-find" && cmp -s "$T/o3-exact-$v" "$T/o3-exact-find"; then
+            ok "$sh：wrg（Makefile 夹具）WRG_SEARCH=$v 与 find 逐字一致（cmp：-i mkrule + 精确 mkshared）"
+        else
+            bad "$sh：wrg（Makefile 夹具）WRG_SEARCH=$v 与 find 不一致（cmp：-i mkrule 或精确 mkshared）"
+        fi
+    done
+    wrg3_to auto "$T/o3-color-auto" mkshared
+    chk "$sh：wrg（Makefile 夹具）管道里也没有 ANSI（grep -c ESC）" \
+        "$(grep -c "$esc" "$T/o3-color-auto" || true)" "0"
+    chk "$sh：WRG_COLOR=always：Makefile 规则行只包住命中的目标名那一段" \
+        "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg mkrule3")" \
+        "./keep/Makefile:12:mkrule2 ${esc}[1;31mmkrule3${esc}[0m: \$(deps)"
+    chk "$sh：WRG_COLOR=always：.PHONY 行只包住声明里的那个目标" \
+        "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg mkphony2")" \
+        "./keep/Makefile:9:.PHONY: mkphony1 ${esc}[1;31mmkphony2${esc}[0m"
+    chk "$sh：WRG_COLOR=always：Makefile 模糊 -i 只包住命中的子串" \
+        "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i kphony1")" \
+        "./keep/Makefile:9:.PHONY: m${esc}[1;31mkphony1${esc}[0m mkphony2"
+    chk "$sh：WRG_COLOR=always：Android.mk 的值从等号后第一个字符开始包" \
+        "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg mkandroidmod")" \
+        "./keep/Android.mk:1:LOCAL_MODULE := ${esc}[1;31mmkandroidmod${esc}[0m"
+    if [ "$have_rg" -eq 1 ] || [ -n "$have_fd" ]; then
+        chk "$sh：Makefile 夹具的着色输出 auto 与 find 也逐字一致" \
+            "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_COLOR=always; wrg -i mkrule")" \
+            "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i mkrule")"
+    fi
 
     # 后端探测顺序（用只有一个可执行名的假 PATH 逼出来）
     chk "$sh：探测顺序：PATH 里只有 rg → 选 rg" \
