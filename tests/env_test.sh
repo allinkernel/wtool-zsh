@@ -658,6 +658,17 @@ rc=1"
             "$(sh_eval "$sh" "cd '$T/src5'; unset NO_COLOR; WRG_COLOR=always; wrg -i vbmeta_systmmm")" \
             "$(sh_eval "$sh" "cd '$T/src5'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i vbmeta_systmmm")"
     fi
+    # 模糊匹配是"子串"不是"名字必须以它开头"：mid-名字里的一段照样命中（截断后打表头）
+    chk "$sh：wrg -i 不锚定在名字开头（metasystemim 截成 metasystem 命中 vbmetasystem）" \
+        "$(sh_eval "$sh" "cd '$T/src5'; wrg -i metasystemim")" \
+        "用户输入metasystemim
+实际匹配metasystem
+匹配目标名如下：
+./keep/Android.bp:2:    name: \"vbmetasystem\",
+./keep/Android.bp:6:    name: \"vbmetasystem_ext\",
+./keep/Android.bp:10:    name: \"vbmeta_system_other\",
+./keep/Makefile:1:.PHONY: vbmeta_system_mk
+./keep/Makefile:2:vbmeta_system_mk: dep"
     # 查询不带 _ 、目标名带 _ ：粗筛正则必须容忍名字里的 _（rg / fd 那条路最容易漏）
     if [ "$have_rg" -eq 1 ]; then
         chk "$sh：wrg（rg）模糊：带 _ 的目标名也命中" \

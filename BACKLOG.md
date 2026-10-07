@@ -44,12 +44,13 @@
 
 **验证到什么程度**：
 
-- `bash tests/env_test.sh`（本机 WSL，rg 14.1.0 + fd 9.0.0）：**277 通过 / 2 失败**（改前 199/0；
-  新加 78 条，每个 shell 39 条）。那 2 条失败是 `win | head -1` 的破管道老毛病
+- `bash tests/env_test.sh`（本机 WSL，rg 14.1.0 + fd 9.0.0）：**279 通过 / 2 失败**（改前 199/0；
+  新加 80 条，每个 shell 40 条 —— 含一条把"子串不锚定"钉死的：`-i metasystemim`
+  截成 `metasystem` 后命中 `vbmetasystem`，表头逐字）。那 2 条失败是 `win | head -1` 的破管道老毛病
   （`/tmp/old_env.zsh` 那份**改动前**的代码同样失败，与 wrg 无关）；
-  把 PATH 收窄成受限目录另测三种：只有 rg = **259**、只有 fd = **253**、
-  都没有（纯 find）= **229**（失败数都是那同样的 2 条）；
-- 容器 `wrg-test`（Ubuntu 24.04、非 WSL、没有 `ip`、rg + fdfind）：**275 通过 / 0 失败**
+  把 PATH 收窄成受限目录另测三种：只有 rg = **261**、只有 fd = **255**、
+  都没有（纯 find）= **231**（失败数都是那同样的 2 条）；
+- 容器 `wrg-test`（Ubuntu 24.04、非 WSL、没有 `ip`、rg + fdfind）：**277 通过 / 0 失败**
   （差 4 条是 WSL/`ip` 那些"按本机实际情况断言"的用例，与 wrg 无关）；
 - **新用例对旧实现会挂**：把新测试脚本配 `git show HEAD:env.zsh|env.bash`（改动前那份）
   在 `/tmp/wt-regress` 里跑 → **38 条 FAIL（19 个/shell）**，正好是假阳性 + 新模糊算法那批，
@@ -97,7 +98,7 @@
 **判据（可原地重跑）**：
 
 ```sh
-cd ~/self/wtool/shell/zsh && bash tests/env_test.sh          # 277 通过, 2 失败（2 条是 win 的老毛病）
+cd ~/self/wtool/shell/zsh && bash tests/env_test.sh          # 279 通过, 2 失败（2 条是 win 的老毛病）
 docker exec wrg-test bash -lc 'cd /aosp/android16-release && source /wtool/shell/zsh/env.bash
   wrg system; echo rc=$?'                                     # 没有匹配 'system' 的目标名 / rc=1
 docker exec wrg-test bash -lc 'cd /aosp/android16-release && source /wtool/shell/zsh/env.bash
