@@ -1,7 +1,8 @@
 # shell/zsh —— 个人 shell 别名与函数集合
 
 一组**和具体项目无关**的 shell 小工具：跳到 repo 工作区根、记路径再跳回来、WSL 的
-`win` / `start`、当前目录树下找 `Android.mk` / `Android.bp` 目标名的 `wrg`，
+`win` / `start`、当前目录树下找 `Android.mk` / `Android.bp` 目标名的 `wrg`
+（优先用 `rg` / `fd`，都没有才回退 `find`，命中的那段标红加粗），
 以及 `gs` / `gl` / `s` / `kls` 这类短别名。
 
 - 项目路径（**路径就是它的身份**，没有单独的 `id`，见 ADR-0037）：`shell/zsh`
@@ -198,6 +199,27 @@ start code         # 在 Windows 侧启动 VS Code
 | `wrg libfoo` | **精确**：目标名和 `libfoo` 完全相同（区分大小写） |
 | `wrg -i lib` | **模糊**：目标名里含 `lib`（子串、忽略大小写） |
 
+**搜索后端**（按顺序探测，前一个没有才用下一个）：
+
+| 顺序 | 后端 | 说明 |
+|---|---|---|
+| 1 | `rg`（ripgrep） | 最快；`Android.mk` / `Android.bp` 两种写法各搜一次再合并 |
+| 2 | `fd`（`fdfind` → `fd-find` → `fd`，探到哪个用哪个） | `fd` 列文件、`awk` 判命中 |
+| 3 | `find` | 兜底：没有 rg / fd 时就是它，行为与本项目以前的版本**逐字一致** |
+
+- `WRG_SEARCH=auto`（默认）/ `rg` / `fd` / `find`：**指定了就一定用它** ——
+  那个可执行文件不在 `PATH` 里就报错、返回 **2**，不会偷偷换成别的；
+- ⚠️ **`rg` / `fd` 会跳过隐藏目录和被 ignore 的目录**（`.repo/`、`out/` 这类），`find` 不会 ——
+  所以前两条快得多，但那两个目录里的目标搜不到；
+  要"连 `.repo/` 一起搜"（找回 `find` 的老行为）就用 `WRG_SEARCH=find`。
+
+**高亮**：命中的**那一段**（精确 = 整个目标名；模糊 = 名字里命中的子串）在终端里是
+**加粗红**；管道 / 重定向里不含任何颜色码。
+
+- `WRG_COLOR=auto`（默认：只在 stdout 是终端时上色）/ `always` / `never`；
+- `NO_COLOR` **非空**时一律不上色（优先级最高，压过 `WRG_COLOR=always`）；
+- `WRG_COLOR` 写错了 → 报错、返回 2。
+
 - `-h` / `--help`：打用法并返回 0；
 - 参数不对/选项不认识：用法打到 stderr，返回 **2**；
 - 当前目录树下没有 `Android.mk` / `Android.bp`：stderr 打
@@ -205,13 +227,14 @@ start code         # 在 Windows 侧启动 VS Code
 - 有这两种文件但没有命中：stderr 打 `wrg: 没有匹配 '<模式>' 的目标名`，返回 1。
 
 ```sh
-wrg libfoo           # ./foo/Android.mk:3:LOCAL_MODULE := libfoo
-wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",
+wrg libfoo           # ./foo/Android.mk:3:LOCAL_MODULE := libfoo    ← libfoo 标红加粗
+wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标红加粗
                      # ./foo/Android.mk:8:LOCAL_PACKAGE_NAME := FooApp
 ```
 
 > 注释里的目标名（`# LOCAL_MODULE := xxx`）不算；精确匹配不认前缀
-> （`wrg lib` 不会命中 `libfoo`）。
+> （`wrg lib` 不会命中 `libfoo`）；目标名里的 `.` `+` 这类符号按**字面量**算
+> （`wrg 'liba+b'` 不会命中 `libaaab`）。
 
 ---
 
@@ -241,7 +264,10 @@ wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",
 | `TERM` | **直接赋值**成 `xterm-256color` | 代码注释：不设成 256 色，vim 等主题显示会受影响 |
 | `WIN_IP` | 非 WSL 上 `win` 的地址来源 | 设了就用它；没设才去 `ip -4 addr` 里找。取不到就报错让你去 `.bashrc` / `.zshrc` 里设它 |
 | `WTOOL_SMB_CONF` | 非 WSL 上 `win` 读哪个 samba 配置 | 默认 `/etc/samba/smb.conf`；测试用它注入假配置，不碰系统文件 |
-| `WRG_PAT` / `WRG_FUZZY` | `wrg` 内部传给 awk 的模式与模式开关 | 不是给人设的，别在 rc 里写 |
+| `WRG_SEARCH` | `wrg` 用哪个搜索后端 | `auto`（默认：按 rg → fdfind/fd-find/fd → find 探测）/ `rg` / `fd` / `find`。指定了就必须存在，否则报错返回 2 |
+| `WRG_COLOR` | `wrg` 高亮开关 | `auto`（默认：只有 stdout 是终端才上色）/ `always` / `never`。写错返回 2 |
+| `NO_COLOR` | 通用约定，非空就关色 | 优先级最高：设了它，`WRG_COLOR=always` 也压不过 |
+| `WRG_PAT` / `WRG_FUZZY` / `WRG_PASS` | `wrg` 内部传给 awk 的模式、模式开关、pass 名 | 不是给人设的，别在 rc 里写 |
 
 ## 快捷键
 
@@ -266,25 +292,42 @@ wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",
 | `win: 读不到 samba 配置 /etc/samba/smb.conf` | 这台机器没装/没配 samba。要么装上并配 `[share]` + `path =`，要么临时 `WTOOL_SMB_CONF=<别的文件>`；scp 那一行照样会给 |
 | `win: /etc/samba/smb.conf 里没有 share 的 path 匹配 <目标>` | 当前目录不在任何 share 的 `path` 下面（或 share 的 path 写的是软链/相对路径）。`testparm` 看一眼 samba 实际认的 path；scp 那一行照样会给 |
 | `win` 在非 WSL 上只打了 scp 一行、返回 1 | 这就是"samba 那半没算出来"，看上面两条的 stderr；scp 行是可以直接用的 |
-| `wrg: 当前目录树下没有 Android.mk / Android.bp`（返回码 1） | 站错目录了（`wrg` 只看当前目录往下）；`cd` 到源码树根部再跑 |
+| `wrg: 当前目录树下没有 Android.mk / Android.bp`（返回码 1） | 站错目录了（`wrg` 只看当前目录往下）；`cd` 到源码树根部再跑。用 rg / fd 时它们跳过的目录（`.repo/`、`out/`）里即使有也不算 |
 | `wrg: 没有匹配 'xxx' 的目标名`（返回码 1） | 精确模式要求名字完全一样（区分大小写）；想按片段找就 `wrg -i 片段` |
+| `wrg` 搜不到 `.repo/` 或 `out/` 里的目标 | 默认后端是 rg / fd，它们跳过隐藏目录与被 ignore 的目录。要连这些一起搜：`WRG_SEARCH=find wrg 名字` |
+| `wrg: WRG_SEARCH=rg 但 PATH 里没有 rg`（返回码 2） | 强制指定了 `rg` 却装没装/不在 PATH 里。装 ripgrep，或者 `WRG_SEARCH=auto` 让它自己挑 |
+| `wrg: WRG_SEARCH=fd 但 PATH 里没有 fdfind / fd-find / fd`（返回码 2） | 同上：装 `fd-find`（Ubuntu 里可执行名是 `fdfind`），或改回 `auto` |
+| `wrg: WRG_SEARCH 只认 auto / rg / fd / find（现在是 xxx）`（返回码 2） | 变量值拼错了（打错不会静默退回默认） |
+| `wrg: WRG_COLOR 只认 auto / always / never（现在是 xxx）`（返回码 2） | 同上 |
+| `wrg` 在管道 / 重定向里没有颜色 | 这是有意的：`WRG_COLOR=auto` 只在终端上色。要强制就 `WRG_COLOR=always` |
+| `wrg` 在终端里也没有颜色 | 看 `echo $NO_COLOR` —— 非空就一律不上色（它优先级最高） |
 | 敲 `gs` 说 command not found | 这个 shell 的 rc 里没有 wtool 块 —— 项目没装，或者装完没重开 shell（`exec $SHELL`） |
 
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # 67 条（两个 shell 各 33 条上下，条数以输出为准）
+bash tests/env_test.sh     # rg + fd 都装了：129 条；只有 rg：121；只有 fd：115；
+                           # 两个都没有（纯 find 兜底）：105 —— 以输出为准
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
 它把**同一张用例表**喂给两个 shell：别名在不在、`_up_to_have_dir` / `cw` 能不能找到
 `.repo`、`pdd`/`pss` 能不能跳回来、`start` 的补全注册、`win` 的 WSL 分支**逐字等于**
 `wslpath -w .`、`win` 的服务器分支（用假 `smb.conf` + `WIN_IP` 注入，最长前缀/路径边界/
-三种报错各一条）、`wrg` 的精确/模糊/注释/空目录/用法，以及 WSL 探测函数在
-**当前这台机器**上给不给对的返回码（本机是 WSL 就按 WSL 断言，不写死）。
+三种报错各一条）、以及 WSL 探测函数在**当前这台机器**上给不给对的返回码
+（本机是 WSL 就按 WSL 断言，不写死）。
 
-> 用例表是共用的，**每加一条两个 shell 都会跑**；数字会随用例增删变化 ——
-> 以脚本最后打印的那一行为准（改前是 22 条）。
+`wrg` 那一段是重点：老行为（精确/模糊/注释/空目录/用法）之外，还比
+**三条后端在同一个夹具上的输出逐字一致**（`WRG_SEARCH=auto|fd|rg` vs `find`，`cmp` 比对，
+模糊 + 精确两种模式）、元字符当字面量（`liba+b` 不命中 `libaaab`）、每条后端的
+"没有命中 / 树下没有这两种文件"、后端探测顺序（用只有一个可执行名的假 `PATH`）、
+强制指定但可执行不存在（rc=2）、高亮（管道里 `grep -c ESC` = 0、`WRG_COLOR=always` 的
+精确字节、`NO_COLOR` 压过 `always`、pty 下自动上色）、以及"隐藏目录里 rg/fd 搜不到、
+find 搜得到"这条语义差异。
+
+> 用例表是共用的，**每加一条两个 shell 都会跑**；后端相关的用例按"本机有没有那个
+> 可执行文件"跳过，所以数字会随环境变 —— 以脚本最后打印的那一行为准
+> （改造前是 67 条）。
 
 ## 文件
 

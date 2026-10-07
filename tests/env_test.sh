@@ -47,6 +47,45 @@ android_app {
 }
 EOF
 
+# wrg 三后端（rg / fd / find）的夹具：正则元字符、大小写、注释、隐藏目录。
+# 单独一棵树（$T/src2），免得动到上面 $T/src 的既有期望值。
+mkdir -p "$T/src2/keep" "$T/src2/.hidden"
+cat > "$T/src2/keep/Android.mk" <<'EOF'
+LOCAL_MODULE := liba+b
+LOCAL_MODULE := libaaab
+LOCAL_PACKAGE_NAME := MixCase
+EOF
+cat > "$T/src2/keep/Android.bp" <<'EOF'
+cc_library {
+    name: "baseTarget",
+}
+
+cc_library {
+    name: "libc.d",
+}
+
+cc_library {
+    name: "libcxd",
+}
+
+// name: "libcommented"
+EOF
+cat > "$T/src2/.hidden/Android.bp" <<'EOF'
+cc_library {
+    name: "libhidden",
+}
+EOF
+
+# wrg 后端探测的夹具：一堆只有一个可执行名的假 PATH（内容为空也行，探测只看命令在不在）
+mkdir -p "$T/bin-rg" "$T/bin-fdfind" "$T/bin-fd-find" "$T/bin-fd" "$T/bin-none"
+for c in rg fdfind fd-find fd; do : > "$T/bin-$c/$c"; chmod +x "$T/bin-$c/$c"; done
+# auto 那条路要真跑一遍 rg：装的 wrapper 记一笔再 exec 真的 rg
+real_rg=$(command -v rg 2>/dev/null || true)
+if [ -n "$real_rg" ]; then
+    printf '#!/bin/sh\n: > "%s"\nexec "%s" "$@"\n' "$T/rg-used" "$real_rg" > "$T/bin-rg/rg"
+    chmod +x "$T/bin-rg/rg"
+fi
+
 # win 服务器分支的夹具：假 smb.conf（只通过 WTOOL_SMB_CONF 注入，绝不碰真 /etc/samba）
 smb="$T/smb.conf"
 cat > "$smb" <<EOF
@@ -247,6 +286,153 @@ $(whoami)@10.1.2.3:$target"
     rc=0
     out=$(sh_eval "$sh" 'wrg') || rc=$?
     chk "$sh：wrg 不带参数：退出码 2（报用法）" "$rc" "2"
+
+    # ---- wrg 的搜索后端：rg → fd（fdfind/fd-find/fd）→ find ----
+    # 本机有哪几个后端（自己探，不用被测代码），没装的那些用例就跳过
+    have_rg=0; command -v rg >/dev/null 2>&1 && have_rg=1
+    have_fd=''
+    for c in fdfind fd-find fd; do
+        if command -v "$c" >/dev/null 2>&1; then have_fd=$c; break; fi
+    done
+
+    wrg_to () {   # <WRG_SEARCH 值> <输出文件> <wrg 参数...>：在 $T/src2 里跑，stdout+stderr 都收
+        local v=$1 f=$2; shift 2
+        sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH='$v'; wrg $*" > "$f"
+    }
+
+    esc=$(printf '\033')
+
+    # 参考：find 是改动前的老行为
+    # 注意：模糊模式用 libc（不碰 .hidden 里的 libhidden）—— 命中落在隐藏目录里时
+    # fd/rg 与 find 本来就不一样，那是另一条用例专门盯着的语义差异
+    wrg_to find "$T/o-fuzzy-find" -i libc
+    wrg_to find "$T/o-exact-find" 'liba+b'
+    for v in auto fd rg; do
+        [ "$v" = fd ] && [ -z "$have_fd" ] && continue
+        [ "$v" = rg ] && [ "$have_rg" -eq 0 ] && continue
+        wrg_to "$v" "$T/o-fuzzy-$v" -i libc
+        wrg_to "$v" "$T/o-exact-$v" 'liba+b'
+        if cmp -s "$T/o-fuzzy-$v" "$T/o-fuzzy-find" && cmp -s "$T/o-exact-$v" "$T/o-exact-find"; then
+            ok "$sh：wrg WRG_SEARCH=$v 与 find 逐字一致（cmp：模糊 -i libc + 精确 liba+b）"
+        else
+            bad "$sh：wrg WRG_SEARCH=$v 与 find 不一致（cmp：模糊 -i libc 或精确 liba+b）"
+        fi
+    done
+
+    # 元字符当字面量：正则没转义的话 liba+b 会连 libaaab 一起命中
+    chk "$sh：wrg 精确匹配里的 + 是字面量（不命中 libaaab）" \
+        "$(sh_eval "$sh" "cd '$T/src2'; wrg 'liba+b'")" "./keep/Android.mk:1:LOCAL_MODULE := liba+b"
+    if [ "$have_rg" -eq 1 ]; then
+        chk "$sh：wrg（rg）精确匹配里的 . 是字面量（不命中 libcxd）" \
+            "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH=rg; wrg 'libc.d'")" \
+            './keep/Android.bp:6:    name: "libc.d",'
+    fi
+
+    # 每条后端的边界：无命中 → 1 + 提示；树下没有这两种文件 → 1 + 提示
+    for v in find fd rg; do
+        case $v in fd) [ -n "$have_fd" ] || continue ;; rg) [ "$have_rg" -eq 1 ] || continue ;; esac
+        chk "$sh：wrg（$v 后端）没有命中：rc=1 + 提示" \
+            "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH='$v'; wrg libnosuch; echo rc=\$?")" \
+            "wrg: 没有匹配 'libnosuch' 的目标名
+rc=1"
+        chk "$sh：wrg（$v 后端）树下没有这两种文件：rc=1 + 提示" \
+            "$(sh_eval "$sh" "cd '$T/empty'; WRG_SEARCH='$v'; wrg libnosuch; echo rc=\$?")" \
+            "wrg: 当前目录树下没有 Android.mk / Android.bp
+rc=1"
+    done
+
+    # 后端探测顺序（用只有一个可执行名的假 PATH 逼出来）
+    chk "$sh：探测顺序：PATH 里只有 rg → 选 rg" \
+        "$(sh_eval "$sh" "PATH='$T/bin-rg'; _wrg_backend")" "rg"
+    chk "$sh：探测顺序：PATH 里只有 fdfind → 选 fdfind" \
+        "$(sh_eval "$sh" "PATH='$T/bin-fdfind'; _wrg_backend")" "fdfind"
+    chk "$sh：探测顺序：PATH 里只有 fd-find → 选 fd-find" \
+        "$(sh_eval "$sh" "PATH='$T/bin-fd-find'; _wrg_backend")" "fd-find"
+    chk "$sh：探测顺序：PATH 里只有 fd → 选 fd" \
+        "$(sh_eval "$sh" "PATH='$T/bin-fd'; _wrg_backend")" "fd"
+    chk "$sh：探测顺序：一个都没有 → 回退 find" \
+        "$(sh_eval "$sh" "PATH='$T/bin-none'; _wrg_backend")" "find"
+
+    if [ -n "$real_rg" ]; then
+        rm -f "$T/rg-used"
+        chk "$sh：auto：PATH 里有 rg 时走 rg，输出正确" \
+            "$(sh_eval "$sh" "cd '$T/src2'; PATH='$T/bin-rg':\$PATH; wrg baseTarget")" \
+            './keep/Android.bp:2:    name: "baseTarget",'
+        if [ -f "$T/rg-used" ]; then
+            ok "$sh：auto：确实调用了 PATH 里那个 rg（wrapper 留下的记号）"
+        else
+            bad "$sh：auto：没有走 PATH 里的 rg（wrapper 没被调到）"
+        fi
+    fi
+
+    # 强制指定：指定的可执行不存在 / 取值不认 → 报错返回 2，不许偷偷换别的
+    chk "$sh：WRG_SEARCH=rg 但 PATH 里没有 rg：rc=2 + 报错" \
+        "$(sh_eval "$sh" "PATH='$T/bin-none'; WRG_SEARCH=rg; wrg libfoo; echo rc=\$?")" \
+        "wrg: WRG_SEARCH=rg 但 PATH 里没有 rg
+rc=2"
+    chk "$sh：WRG_SEARCH=fd 但 PATH 里没有 fd：rc=2 + 报错" \
+        "$(sh_eval "$sh" "PATH='$T/bin-none'; WRG_SEARCH=fd; wrg libfoo; echo rc=\$?")" \
+        "wrg: WRG_SEARCH=fd 但 PATH 里没有 fdfind / fd-find / fd
+rc=2"
+    chk "$sh：WRG_SEARCH 取值不认：rc=2 + 报错" \
+        "$(sh_eval "$sh" "WRG_SEARCH=zzz; wrg libfoo; echo rc=\$?")" \
+        "wrg: WRG_SEARCH 只认 auto / rg / fd / find（现在是 zzz）
+rc=2"
+
+    # ---- 高亮：只有 stdout 是终端才上色，管道里必须是纯文本 ----
+    wrg_to auto "$T/o-color-auto" -i base
+    chk "$sh：管道/重定向时输出里没有 ANSI 转义（grep -c ESC）" \
+        "$(grep -c "$esc" "$T/o-color-auto" || true)" "0"
+    chk "$sh：WRG_COLOR=always 精确匹配：只把整个目标名包成红色" \
+        "$(sh_eval "$sh" "cd '$T/src2'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg baseTarget")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31mbaseTarget${esc}[0m\","
+    chk "$sh：WRG_COLOR=always 模糊 -i base：只包住命中的那一段（base）" \
+        "$(sh_eval "$sh" "cd '$T/src2'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i base")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31mbase${esc}[0mTarget\","
+    chk "$sh：NO_COLOR 非空时压过 WRG_COLOR=always（不着色）" \
+        "$(sh_eval "$sh" "cd '$T/src2'; NO_COLOR=1; WRG_SEARCH=find; WRG_COLOR=always; wrg baseTarget")" \
+        './keep/Android.bp:2:    name: "baseTarget",'
+    chk "$sh：WRG_COLOR 取值不认：rc=2 + 报错" \
+        "$(sh_eval "$sh" "cd '$T/src2'; WRG_COLOR=zzz; wrg baseTarget; echo rc=\$?")" \
+        "wrg: WRG_COLOR 只认 auto / always / never（现在是 zzz）
+rc=2"
+    if [ "$have_rg" -eq 1 ] || [ -n "$have_fd" ]; then
+        chk "$sh：着色输出在 auto 与 find 之间也逐字一致" \
+            "$(sh_eval "$sh" "cd '$T/src2'; unset NO_COLOR; WRG_COLOR=always; wrg -i base")" \
+            "$(sh_eval "$sh" "cd '$T/src2'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i base")"
+    fi
+    # 真终端才自动上色：用 pty（script）验一条，验不了就跳过
+    if command -v script >/dev/null 2>&1; then
+        printf '%s\n' "WTOOL_PROJECT_DIR='$proj'; export WTOOL_PROJECT_DIR" \
+                      ". '$proj/env.$sh'" \
+                      "cd '$T/src2'" \
+                      "wrg baseTarget" > "$T/tty-$sh.sh"
+        out=$(env -u NO_COLOR script -qec "$sh $T/tty-$sh.sh" /dev/null 2>/dev/null | tr -d '\r')
+        case $out in
+            *"${esc}[1;31mbaseTarget${esc}[0m"*)
+                ok "$sh：stdout 是终端时自动高亮（pty 实测）" ;;
+            *)
+                bad "$sh：stdout 是终端时没自动高亮 [$out]" ;;
+        esac
+    fi
+
+    # ---- fd / rg 跳过隐藏目录、find 不跳（文档里写明的语义差异）----
+    if [ "$have_rg" -eq 1 ]; then
+        chk "$sh：隐藏目录里的目标：rg 搜不到（rc=1）" \
+            "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH=rg; wrg libhidden; echo rc=\$?")" \
+            "wrg: 没有匹配 'libhidden' 的目标名
+rc=1"
+    fi
+    if [ -n "$have_fd" ]; then
+        chk "$sh：隐藏目录里的目标：fd 搜不到（rc=1）" \
+            "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH=fd; wrg libhidden; echo rc=\$?")" \
+            "wrg: 没有匹配 'libhidden' 的目标名
+rc=1"
+    fi
+    chk "$sh：隐藏目录里的目标：find 搜得到（rc=0）" \
+        "$(sh_eval "$sh" "cd '$T/src2'; WRG_SEARCH=find; wrg libhidden; echo rc=\$?")" \
+        "./.hidden/Android.bp:2:    name: \"libhidden\",
+rc=0"
 done
 
 printf '\n%d 通过, %d 失败\n' "$pass" "$fail"

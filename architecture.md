@@ -95,20 +95,62 @@
 
 ### 4.5 `wrg`
 
-`wrg` 只认两种文件：`Android.mk`、`Android.bp`（`find` 的 `-name` 就是这两个）。
-`-i` 切到模糊模式（子串、忽略大小写），否则精确（`==`）。
+`wrg` 只认两种文件：`Android.mk`、`Android.bp`。`-i` 切到模糊模式（子串、忽略大小写），
+否则精确（`==`）。三种搜索后端，**按顺序探测**，前一个没有才用下一个：
 
-- 先 `find . -type f \( -name Android.mk -o -name Android.bp \) -print -quit`：
+| 顺序 | 后端 | 怎么找到它 | 怎么搜 |
+|---|---|---|---|
+| 1 | rg | `command -v rg` | 两种文件的写法不一样 → 跑两次 `rg --no-heading --line-number --with-filename --color=never -g <文件名> -e <正则> .`，输出合并 |
+| 2 | fd | `command -v fdfind` → `fd-find` → `fd`（第一个有的） | `<fd> -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}"`（`-X` = 批量 exec，等价于 `find … {} +`） |
+| 3 | find | 兜底，不用探 | `find . -type f \( -name Android.mk -o -name Android.bp \) -exec awk "${_WRG_AWK}" {} +` |
+
+- 后端选择：`WRG_SEARCH=auto`（默认，按上表探测）/ `rg` / `fd` / `find`。
+  **指定了就一定用它**：`rg` / `fd` 找不到可执行文件 → stderr 报错、返回 **2**；
+  取值不认 → 同样 2。`WRG_SEARCH` 只在 `wrg` 里读，不影响别的命令。
+- 判命中、抠目标名、着色都在**同一段 awk**（`_WRG_AWK`，两处 `wrg` 的实现里各存一份、逐字相同）里，
+  三条后端共用，输出因此逐字一致：
+  - `WRG_PASS=search`：读文件，`Android.mk` 行匹配
+    `^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+`、
+    `Android.bp` 行匹配 `^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*"`，
+    取等号后 / 引号里那段当目标名；命中（精确 `v == pat`，模糊 `index(tolower(v), tolower(pat)) > 0`）
+    就 `print 路径 ":" FNR ":" $0`；
+  - `WRG_PASS=paint`：读 stdin 上的 `路径:行号:原文`，把命中的那一段包上颜色（见下）；
+  - 路径归一化：`norm()` 给"既不是 `/` 开头、也不是 `./` 开头"的路径补 `./`
+    （fd 直接打印时没有 `./`，加了 `-X` 才有；find 一直有 —— 归一化保证两条路形状一样）。
+- **rg 那条路**：rg 一个正则只能搜一种写法，所以两种文件各搜一次再合并；值先做正则转义
+  （`_wrg_re_escape`：把 `\ ^ $ . * + ? ( ) [ ] { } |` 变字面量），精确模式值后面必须跟
+  `([[:space:]#]|$)`、模糊模式只给值套 `(?i:...)`（关键词部分保持大小写敏感）。
+  rg 的退出码：**1 = 没命中**（不是错误），> 1 才是错。
+- **fd 那条路**：fd 的 `-g` 是**开关**（不带参数），所以两个文件名合成**一个** glob
+  `Android.{mk,bp}`（`_WRG_FD_GLOB`）；fd 没命中时的退出码各版本不一样
+  （9.0.0 给 0，有的给 1），实现里"空输出 + 1"当没命中。
+- **语义差异**（rg / fd 与 find 的）：rg / fd 默认**跳过隐藏目录和被 ignore 的目录**
+  （`.repo/`、`out/` 这类），find 不跳 —— 所以整树更快，但那些目录里的目标搜不到。
+  要连它们一起搜就用 `WRG_SEARCH=find`。
+- 先看树里有没有这两种文件（rg：`rg --files -g Android.mk -g Android.bp .`；
+  fd：`<fd> -t f -g "${_WRG_FD_GLOB}" | head -n 1`；find：`-print -quit`）：
   空 → stderr `wrg: 当前目录树下没有 Android.mk / Android.bp`，返回 1；
-- 再 `find ... -exec awk ... {} +`：模式经环境变量 `WRG_PAT` / `WRG_FUZZY` 传进 awk
-  （避免 `-v` 解释转义 / 避免把目标名当正则）；
-  - `Android.mk`：行匹配 `^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+`，取 `=` 之后那段；
-  - `Android.bp`：行匹配 `^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*"`，取引号里那段；
-  - 名字命中 → `print FILENAME ":" FNR ":" $0`；
-- 输出非空就 `sort -t: -k1,1 -k2,2n` 后打印；空 → stderr
-  `wrg: 没有匹配 '<模式>' 的目标名`，返回 1；`find`/`awk` 非 0 → stderr
-  `wrg: 搜索失败（find/awk 退出码 <n>）`，返回 1；
+- 结果先 `sort -t: -k1,1 -k2,2n`（**纯文本**，ANSI 不参与排序键），
+  要上色时再过一个 `WRG_PASS=paint` 的 awk；
+- 输出非空就打印、返回 0；空 → stderr `wrg: 没有匹配 '<模式>' 的目标名`，返回 1；
+  后端非 0 → stderr `wrg: 搜索失败（<后端>/awk 退出码 <n>）`，返回 1
+  （find 那条路是 `find/awk`，与改动前逐字一样；rg 那条路是 `rg`）；
 - 用法错误（选项不认、参数不是 1 个）→ 用法打 stderr，返回 2；`-h` / `--help` → 打 stdout，返回 0。
+
+#### 4.5.1 `wrg` 的高亮
+
+命中的**那一段**（不是整行）用 `\033[1;31m` … `\033[0m` 包住：精确 = 整个目标名；
+模糊 = 目标名里命中的那个子串（`index()` 定位 + `length(pat)` 定长）。
+
+| 变量 | 作用 |
+|---|---|
+| `WRG_COLOR=auto`（默认） | 只有 stdout 是终端（`[ -t 1 ]`）才上色；管道 / 重定向是纯文本 |
+| `WRG_COLOR=always` / `never` | 强开 / 强关 |
+| `NO_COLOR` | **非空就永不上色** —— 优先级最高，压过 `WRG_COLOR=always` |
+| `WRG_COLOR` 取值不认 | stderr 报错，返回 2（和 `WRG_SEARCH` 一样，拼错不静默） |
+
+内部变量（不是给人设的）：`WRG_PAT` / `WRG_FUZZY` / `WRG_PASS`（传给 awk 的模式、模式开关、
+pass 名）、`_WRG_AWK`（那段 awk 的正文）、`_WRG_FD_GLOB`（fd 的 glob）。
 
 ### 4.6 `start` 的补全
 
@@ -125,7 +167,23 @@
 - 自己 `mktemp -d` 造夹具：假 repo 工作区（`$T/ws/.repo`、`$T/ws/a/b`、`$T/ws/ab`）、
   wrg 用的 `$T/src/{foo,bar}/Android.mk|Android.bp`、`$T/empty`、
   win 用的假 `$T/smb.conf` / `$T/smb-nomatch.conf`；**不碰真 `$HOME`、不碰 `/etc/samba`**；
+- wrg 三后端的夹具单独一棵树 `$T/src2`（`keep/Android.mk` 里放着 `liba+b` / `libaaab` 这种
+  正则元字符陷阱、`keep/Android.bp`、以及只有 find 看得到的 `.hidden/Android.bp`），
+  外加一组"只有一个可执行名的假 PATH"`$T/bin-{rg,fdfind,fd-find,fd,none}`（用来逼出探测顺序）；
+  PATH 里有真 `rg` 时还往 `$T/bin-rg/rg` 放一个"记一笔再 exec 真 rg"的 wrapper，
+  用它证明 `auto` 真的走了 rg；
 - `sh_eval <shell> <片段>` 在 `$T/ws/a/b` 里 `source` 对应 env 后执行片段，
   并清掉继承来的 `WTOOL_PROJECT_ROOT` / `WTOOL_PROJECT_ID`；
 - `for sh in bash zsh` 同一张表跑两遍；没装某个 shell 就跳过那一段；
-- 当前条数：**67 条**（bash 33 / zsh 34，以脚本最后一行输出为准）。
+- wrg 部分覆盖：老的精确/模糊/注释/空目录/用法，加
+  ① `WRG_SEARCH=auto|fd|rg` 与 `find` 的输出用 `cmp` 逐字比对（模糊 `-i libc` + 精确 `liba+b` 两种模式）、
+  ② 元字符当字面量（`liba+b` 不命中 `libaaab`、`libc.d` 不命中 `libcxd`）、
+  ③ 每条后端的"没有命中"和"树下没有这两种文件"（rc + 报错文字）、
+  ④ 探测顺序（只有 rg / 只有 fdfind / 只有 fd-find / 只有 fd / 都没有 → `find`）+ `auto` 走 rg 的 wrapper 记号、
+  ⑤ 强制指定但可执行不存在、`WRG_SEARCH` 取值不认（rc=2 + 报错文字）、
+  ⑥ 高亮：管道里 `grep -c ESC` = 0、`WRG_COLOR=always` 的精确/模糊字节、`NO_COLOR` 压过 `always`、
+  `WRG_COLOR` 取值不认、auto 与 find 的着色输出一致、`script`(pty) 下自动上色、
+  ⑦ 隐藏目录差异：rg / fd 搜不到、find 搜得到；
+- 后端相关的用例按"本机有没有那个可执行文件"跳过，所以条数随环境变：
+  同一个夹具下实测 **rg+fd 都在 = 129 条**、只有 rg = 121、只有 fd = 115、都没有（纯 find）= 105，
+  失败都是 0（**以脚本最后一行输出为准**）。

@@ -213,17 +213,142 @@ start ()
 #   wrg <名字>      精确匹配目标名
 #   wrg -i <片段>   模糊匹配（目标名里含这个片段，忽略大小写）
 # 认这两种写法：Android.mk 的 LOCAL_MODULE / LOCAL_PACKAGE_NAME，Android.bp 的 name: "xxx"
-# 输出：文件:行号:命中行
+# 输出：文件:行号:命中行（路径形状与 find 一致带 ./ 前缀，按文件+行号排序；
+#   命中的那一段在终端里高亮，管道/重定向时不着色）
+# 搜索后端：rg → fd（按 fdfind / fd-find / fd 探测）→ find，前一个没有才用下一个。
+#   rg / fd 默认跳过隐藏目录和 .gitignore 里的目录（例如 .repo/、out/），更快；
+#   要连这些目录一起搜（find 的老行为）就用 WRG_SEARCH=find。
+#   WRG_SEARCH=auto(默认)/rg/fd/find、WRG_COLOR=auto(默认)/always/never 是测试和兜底用的：
+#   指定了就必须用它，找不到那个可执行文件就报错（rc=2），不会偷偷换成别的。
 # ---------------------------------------------------------------------------
+_WRG_FD_GLOB='Android.{mk,bp}'   # fd 的 -g 是"开关"（不带参数），两个文件名合成一个 glob
+
+# 三种后端共用的一段 awk：WRG_PASS=search 扫文件出结果，WRG_PASS=paint 给 stdin 上的
+# "路径:行号:原文" 上色（高亮 = \033[1;31m … \033[0m，只包住命中的那一段）。
+# 判命中 / 抠目标名的逻辑只有这一份，三个后端共用，保证输出一致。
+_WRG_AWK='
+BEGIN {
+    pat = ENVIRON["WRG_PAT"]; lpat = tolower(pat); fuzzy = ENVIRON["WRG_FUZZY"] + 0
+    pass = ENVIRON["WRG_PASS"]
+}
+function norm(p) {
+    if (p ~ /^\// || p ~ /^\.\//) return p
+    return "./" p
+}
+function grab(p, line) {
+    v = ""; vs = 0
+    if (p ~ /Android[.]bp$/) {
+        if (match(line, /^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+            v = substr(line, RSTART, RLENGTH)
+            sub(/^[^"]*"/, "", v); sub(/"[[:space:]]*$/, "", v)
+            vs = RSTART + RLENGTH - 1 - length(v)
+            return 1
+        }
+        return 0
+    }
+    if (p ~ /Android[.]mk$/) {
+        if (match(line, /^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+/)) {
+            v = substr(line, RSTART, RLENGTH)
+            sub(/^[^=]*=[[:space:]]*/, "", v)
+            vs = RSTART + RLENGTH - length(v)
+            return 1
+        }
+        return 0
+    }
+    return 0
+}
+function hitoff() {
+    if (fuzzy) return index(tolower(v), lpat) - 1
+    return (v == pat) ? 0 : -1
+}
+pass == "paint" {
+    i1 = index($0, ":")
+    if (i1 == 0) { print; next }
+    i2 = i1 + index(substr($0, i1 + 1), ":")
+    if (i2 == i1) { print; next }
+    p = substr($0, 1, i1 - 1); n = substr($0, i1 + 1, i2 - i1 - 1); t = substr($0, i2 + 1)
+    if (!grab(p, t)) { print; next }
+    o = hitoff()
+    if (o < 0 || v == "") { print; next }
+    len = fuzzy ? length(pat) : length(v)
+    print p ":" n ":" substr(t, 1, vs - 1 + o) "\033[1;31m" substr(t, vs + o, len) "\033[0m" substr(t, vs + o + len)
+    next
+}
+{
+    p = norm(FILENAME)
+    if (!grab(p, $0)) next
+    if (hitoff() < 0) next
+    print p ":" FNR ":" $0
+}
+'
+
 _wrg_usage ()
 {
     echo "Usage: wrg <名字>        # 精确匹配目标名"
     echo "       wrg -i <片段>     # 模糊匹配（子串、忽略大小写）"
 }
 
+# 挑搜索后端：打印要用的可执行名（find 就是字面量 find）。
+# WRG_SEARCH=auto 按 rg → fdfind → fd-find → fd 探测，都没有就用 find；
+# 指定成 rg / fd / find 时就必须存在，否则 stderr 报错并返回 2。
+_wrg_backend ()
+{
+    local c
+    case "${WRG_SEARCH:-auto}" in
+        auto|'')
+            for c in rg fdfind fd-find fd; do
+                if command -v "$c" >/dev/null 2>&1; then printf '%s\n' "$c"; return 0; fi
+            done
+            printf 'find\n'; return 0 ;;
+        rg)
+            if command -v rg >/dev/null 2>&1; then printf 'rg\n'; return 0; fi
+            echo "wrg: WRG_SEARCH=rg 但 PATH 里没有 rg" >&2
+            return 2 ;;
+        fd)
+            for c in fdfind fd-find fd; do
+                if command -v "$c" >/dev/null 2>&1; then printf '%s\n' "$c"; return 0; fi
+            done
+            echo "wrg: WRG_SEARCH=fd 但 PATH 里没有 fdfind / fd-find / fd" >&2
+            return 2 ;;
+        find) printf 'find\n'; return 0 ;;
+        *)
+            echo "wrg: WRG_SEARCH 只认 auto / rg / fd / find（现在是 ${WRG_SEARCH}）" >&2
+            return 2 ;;
+    esac
+}
+
+# 把目标名里对正则（rg 用的那种 ERE）有意义的字符转义成字面量
+_wrg_re_escape ()
+{
+    printf '%s' "${1}" | awk '
+        { out = ""; n = length($0)
+          for (i = 1; i <= n; i++) {
+              c = substr($0, i, 1)
+              if (index("\\^$.*+?()[]{}|", c) > 0) out = out "\\"
+              out = out c
+          }
+          printf "%s", out }'
+}
+
+# 要不要上色：WRG_COLOR=auto（默认，只有 stdout 是终端才上色）/ always / never；
+# NO_COLOR 非空时一律不上色（优先级最高）。返回 0 上色 / 1 不上色 / 2 取值不认（已报错）。
+_wrg_color ()
+{
+    case "${WRG_COLOR:-auto}" in
+        auto|'') [ -t 1 ] || return 1 ;;
+        always)  ;;
+        never)   return 1 ;;
+        *)
+            echo "wrg: WRG_COLOR 只认 auto / always / never（现在是 ${WRG_COLOR}）" >&2
+            return 2 ;;
+    esac
+    [ -n "${NO_COLOR:-}" ] && return 1
+    return 0
+}
+
 wrg ()
 {
-    local fuzzy=0 pat out rc
+    local fuzzy=0 pat out rc tool errname brc color crc esc o1 o2 r1 r2 re_bp re_mk
     case "${1:-}" in
         -h|--help) _wrg_usage; return 0 ;;
         -i)        fuzzy=1; shift ;;
@@ -235,45 +360,80 @@ wrg ()
     fi
     pat="${1}"
 
-    if [[ -z "$(find . -type f \( -name Android.mk -o -name Android.bp \) -print -quit 2>/dev/null)" ]]; then
-        echo "wrg: 当前目录树下没有 Android.mk / Android.bp" >&2
-        return 1
-    fi
+    tool=$(_wrg_backend); brc=$?
+    if [[ ${brc} -ne 0 ]]; then return ${brc}; fi
 
-    out=$(WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" find . -type f \( -name Android.mk -o -name Android.bp \) -exec awk '
-        BEGIN { pat = ENVIRON["WRG_PAT"]; lpat = tolower(pat); fuzzy = ENVIRON["WRG_FUZZY"] + 0 }
-        function hit(v) {
-            if (fuzzy) return index(tolower(v), lpat) > 0
-            return v == pat
-        }
-        FILENAME ~ /Android[.]bp$/ {
-            if (match($0, /^[[:space:]]*name[[:space:]]*:[[:space:]]*"[^"]*"/)) {
-                v = substr($0, RSTART, RLENGTH)
-                sub(/^[^"]*"/, "", v)
-                sub(/"[[:space:]]*$/, "", v)
-                if (hit(v)) print FILENAME ":" FNR ":" $0
-            }
-            next
-        }
-        FILENAME ~ /Android[.]mk$/ {
-            if (match($0, /^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]+/)) {
-                v = substr($0, RSTART, RLENGTH)
-                sub(/^[^=]*=[[:space:]]*/, "", v)
-                if (hit(v)) print FILENAME ":" FNR ":" $0
-            }
-            next
-        }
-    ' {} + 2>/dev/null)
-    rc=$?
+    color=0
+    _wrg_color; crc=$?
+    if [[ ${crc} -eq 2 ]]; then return 2; fi
+    if [[ ${crc} -eq 0 ]]; then color=1; fi
+
+    case "${tool}" in
+    rg)
+        errname="${tool}"
+        # 先看树里有没有这两种文件（rg --files 只看文件名，和后面的搜索遵守同一套 ignore 规则）
+        if [[ -z "$("${tool}" --files -g Android.mk -g Android.bp . 2>/dev/null | head -n 1)" ]]; then
+            echo "wrg: 当前目录树下没有 Android.mk / Android.bp" >&2
+            return 1
+        fi
+        # rg 只能按一个正则搜一次，两种文件的写法不一样 → 搜两次再合并；
+        # 值要做正则转义，关键词那部分的大小写要敏感（模糊只对值用 (?i:...)）
+        esc=$(_wrg_re_escape "${pat}")
+        if [[ ${fuzzy} -eq 0 ]]; then
+            re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"${esc}\""
+            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*'"${esc}"'([[:space:]#]|$)'
+        else
+            # 模糊：只让"值"那一段忽略大小写（(?i:...)），关键词仍旧大小写敏感
+            re_bp="^[[:space:]]*name[[:space:]]*:[[:space:]]*\"[^\"]*(?i:${esc})[^\"]*\""
+            re_mk='^[[:space:]]*(LOCAL_MODULE|LOCAL_PACKAGE_NAME)[[:space:]]*:?=[[:space:]]*[^[:space:]#]*(?i:'"${esc}"')'
+        fi
+        o1=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.bp -e "${re_bp}" . 2>/dev/null); r1=$?
+        o2=$("${tool}" --no-heading --line-number --with-filename --color=never -g Android.mk -e "${re_mk}" . 2>/dev/null); r2=$?
+        rc=0
+        if [[ ${r1} -gt 1 ]]; then rc=${r1}; fi     # rg：1 = 没命中，>1 才是真错
+        if [[ ${r2} -gt 1 ]]; then rc=${r2}; fi
+        out=$(printf '%s\n%s' "${o1}" "${o2}")
+        if [[ -z "${o1}" ]]; then out="${o2}"; fi
+        ;;
+    find)
+        errname="find/awk"
+        if [[ -z "$(find . -type f \( -name Android.mk -o -name Android.bp \) -print -quit 2>/dev/null)" ]]; then
+            echo "wrg: 当前目录树下没有 Android.mk / Android.bp" >&2
+            return 1
+        fi
+        out=$(WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
+            find . -type f \( -name Android.mk -o -name Android.bp \) -exec awk "${_WRG_AWK}" {} + 2>/dev/null)
+        rc=$?
+        ;;
+    *)
+        errname="${tool}/awk"
+        if [[ -z "$("${tool}" -t f -g "${_WRG_FD_GLOB}" 2>/dev/null | head -n 1)" ]]; then
+            echo "wrg: 当前目录树下没有 Android.mk / Android.bp" >&2
+            return 1
+        fi
+        out=$(WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=search \
+            "${tool}" -t f -g "${_WRG_FD_GLOB}" -X awk "${_WRG_AWK}" 2>/dev/null)
+        rc=$?
+        # fd 没命中时的退出码各版本不一样（9.0.0 给 0，有的给 1）：空输出 + 1 当"没命中"
+        if [[ -z "${out}" && ${rc} -eq 1 ]]; then rc=0; fi
+        ;;
+    esac
+
     if [[ ${rc} -ne 0 ]]; then
-        echo "wrg: 搜索失败（find/awk 退出码 ${rc}）" >&2
+        echo "wrg: 搜索失败（${errname} 退出码 ${rc}）" >&2
         return 1
     fi
     if [[ -z "${out}" ]]; then
         echo "wrg: 没有匹配 '${pat}' 的目标名" >&2
         return 1
     fi
-    printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n
+    # 先按纯文本排序，再（只在终端上）过一遍着色，ANSI 不会污染排序键
+    if [[ ${color} -eq 1 ]]; then
+        printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n | \
+            WRG_PAT="${pat}" WRG_FUZZY="${fuzzy}" WRG_PASS=paint awk "${_WRG_AWK}"
+    else
+        printf '%s\n' "${out}" | sort -t: -k1,1 -k2,2n
+    fi
     return 0
 }
 
