@@ -157,6 +157,32 @@ cc_library {
 EOF
 printf '.PHONY: vbmeta_system_mk\nvbmeta_system_mk: dep\n\t@echo hi\n' > "$T/src5/keep/Makefile"
 
+# wrg 高亮分两段（红 = 输入匹配到的那一段、绿 = 目标名里其余部分）的夹具（$T/src6）：
+# 查 `-i ystemim`（归一化后 7 个字符，能整段命中）时这 4 个名字各钉一个边界 ——
+#   ① systemimage            匹配段在中间，前面 `s` 绿、后面 `age` 绿；
+#   ② vbmetasystemimage      同上，前面 `vbmetas` 绿；
+#   ③ systemimagesystemim    子串出现两次，只有第一次红，第二次连同尾巴一起绿；
+#   ④ vbmetasystemim         匹配段正好在结尾 → 没有后段绿码。
+# 行号被断言钉着（2 / 6 / 10 / 14），改动要连用例一起改。
+mkdir -p "$T/src6/keep"
+cat > "$T/src6/keep/Android.bp" <<'EOF'
+cc_library {
+    name: "systemimage",
+}
+
+cc_library {
+    name: "vbmetasystemimage",
+}
+
+cc_library {
+    name: "systemimagesystemim",
+}
+
+cc_library {
+    name: "vbmetasystemim",
+}
+EOF
+
 # wrg 后端探测的夹具：一堆只有一个可执行名的假 PATH（内容为空也行，探测只看命令在不在）
 mkdir -p "$T/bin-rg" "$T/bin-fdfind" "$T/bin-fd-find" "$T/bin-fd" "$T/bin-none"
 for c in rg fdfind fd-find fd; do : > "$T/bin-$c/$c"; chmod +x "$T/bin-$c/$c"; done
@@ -521,9 +547,9 @@ rc=1"
     chk "$sh：WRG_COLOR=always：.PHONY 行只包住声明里的那个目标" \
         "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg mkphony2")" \
         "./keep/Makefile:9:.PHONY: mkphony1 ${esc}[1;31mmkphony2${esc}[0m"
-    chk "$sh：WRG_COLOR=always：Makefile 模糊 -i 只包住命中的子串" \
+    chk "$sh：WRG_COLOR=always：Makefile 模糊 -i 命中段红粗、目标名其余部分绿" \
         "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i kphony1")" \
-        "./keep/Makefile:9:.PHONY: m${esc}[1;31mkphony1${esc}[0m mkphony2"
+        "./keep/Makefile:9:.PHONY: ${esc}[32mm${esc}[0m${esc}[1;31mkphony1${esc}[0m mkphony2"
     chk "$sh：WRG_COLOR=always：Android.mk 的值从等号后第一个字符开始包" \
         "$(sh_eval "$sh" "cd '$T/src3'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg mkandroidmod")" \
         "./keep/Android.mk:1:LOCAL_MODULE := ${esc}[1;31mmkandroidmod${esc}[0m"
@@ -618,17 +644,17 @@ rc=1"
     chk "$sh：wrg -i 里的 . 是字面量（不命中 libcxd）" \
         "$(sh_eval "$sh" "cd '$T/src2'; wrg -i 'libc.d'")" \
         './keep/Android.bp:6:    name: "libc.d",'
-    # 高亮：模糊时只包住"实际匹配"的那一段（原文里有 _ 的按原串下标高亮）
-    chk "$sh：WRG_COLOR=always：模糊只包住实际匹配的前缀（含 _ 的原文也对）" \
+    # 高亮：模糊时命中段红粗、目标名里其余部分绿（原文里有 _ 的按原串下标切两段）
+    chk "$sh：WRG_COLOR=always：模糊命中段红粗 + 名字其余部分绿（含 _ 的原文也对）" \
         "$(sh_eval "$sh" "cd '$T/src5'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i vbmeta_systmmm")" \
         "用户输入vbmeta_systmmm
 实际匹配vbmetasyst
 匹配目标名如下：
-./keep/Android.bp:2:    name: \"${esc}[1;31mvbmetasyst${esc}[0mem\",
-./keep/Android.bp:6:    name: \"${esc}[1;31mvbmetasyst${esc}[0mem_ext\",
-./keep/Android.bp:10:    name: \"${esc}[1;31mvbmeta_syst${esc}[0mem_other\",
-./keep/Makefile:1:.PHONY: ${esc}[1;31mvbmeta_syst${esc}[0mem_mk
-./keep/Makefile:2:${esc}[1;31mvbmeta_syst${esc}[0mem_mk: dep"
+./keep/Android.bp:2:    name: \"${esc}[1;31mvbmetasyst${esc}[0m${esc}[32mem${esc}[0m\",
+./keep/Android.bp:6:    name: \"${esc}[1;31mvbmetasyst${esc}[0m${esc}[32mem_ext${esc}[0m\",
+./keep/Android.bp:10:    name: \"${esc}[1;31mvbmeta_syst${esc}[0m${esc}[32mem_other${esc}[0m\",
+./keep/Makefile:1:.PHONY: ${esc}[1;31mvbmeta_syst${esc}[0m${esc}[32mem_mk${esc}[0m
+./keep/Makefile:2:${esc}[1;31mvbmeta_syst${esc}[0m${esc}[32mem_mk${esc}[0m: dep"
 
     # 三后端在 src5 上逐字一致（模糊带表头 + 精确各一条），着色也一致
     wrg5_to () {   # <WRG_SEARCH 值> <输出文件> <wrg 参数...>：在 $T/src5 里跑
@@ -679,6 +705,58 @@ rc=1"
             "$(sh_eval "$sh" "cd '$T/src5'; WRG_SEARCH=fd; wrg -i vbmetasystem | grep -c 'vbmeta_system_other'")" "1"
     fi
 
+    # ---- wrg：高亮分两段 —— 输入匹配到的那一段红粗、目标名里其余部分绿（$T/src6）----
+    # 四行的完整 ANSI 字节：①② 匹配段在中间（前面 / 后面都绿）、③ 子串出现两次
+    # （第二次连同尾巴一起绿）、④ 匹配段正好在结尾（没有后段绿码）。
+    # 行内其它字符（`name: "` / `",`）不着色。
+    chk "$sh：WRG_COLOR=always 模糊 -i ystemim：四行完整 ANSI 字节（红段位置 + 绿段覆盖其余）" \
+        "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i ystemim")" \
+        "./keep/Android.bp:2:    name: \"${esc}[32ms${esc}[0m${esc}[1;31mystemim${esc}[0m${esc}[32mage${esc}[0m\",
+./keep/Android.bp:6:    name: \"${esc}[32mvbmetas${esc}[0m${esc}[1;31mystemim${esc}[0m${esc}[32mage${esc}[0m\",
+./keep/Android.bp:10:    name: \"${esc}[32ms${esc}[0m${esc}[1;31mystemim${esc}[0m${esc}[32magesystemim${esc}[0m\",
+./keep/Android.bp:14:    name: \"${esc}[32mvbmetas${esc}[0m${esc}[1;31mystemim${esc}[0m\","
+    # 一个名字里出现两次匹配子串：红段只有一个（第一次），第二次在绿段里
+    chk "$sh：一个名字里命中两次：只有第一处红（红段计数 = 1）" \
+        "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i ystemim | sed -n 3p | grep -o -F '${esc}[1;31m' | wc -l")" "1"
+    # 精确模式行为不变：整名红粗、没有绿段
+    chk "$sh：WRG_COLOR=always 精确：整名红粗、无绿段" \
+        "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg systemimage")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31msystemimage${esc}[0m\","
+    chk "$sh：精确输出里一个绿段都没有（grep -c 绿色码 = 0）" \
+        "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg systemimage | grep -c -F '${esc}[32m' || true")" "0"
+    # 模糊但整名命中（-i systemimage 的第 1 行）：没匹配到的部分为空 → 同样不打绿段
+    chk "$sh：模糊整名命中也没有绿段（-i systemimage 第 1 行）" \
+        "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i systemimage | sed -n 1p")" \
+        "./keep/Android.bp:2:    name: \"${esc}[1;31msystemimage${esc}[0m\","
+    # 管道 / NO_COLOR：老规矩不变（整段纯文本，不是"去掉颜色码后的样子"）
+    wrg6_to () {   # <WRG_SEARCH 值> <输出文件> <wrg 参数...>：在 $T/src6 里跑
+        local v=$1 f=$2; shift 2
+        sh_eval "$sh" "cd '$T/src6'; WRG_SEARCH='$v'; wrg $*" > "$f"
+    }
+    wrg6_to auto "$T/o6-plain-auto" -i ystemim
+    chk "$sh：wrg（分两段夹具）管道里没有 ANSI（grep -c ESC）" \
+        "$(grep -c "$esc" "$T/o6-plain-auto" || true)" "0"
+    chk "$sh：NO_COLOR 压过 WRG_COLOR=always（分两段夹具：整段纯文本）" \
+        "$(sh_eval "$sh" "cd '$T/src6'; NO_COLOR=1; WRG_SEARCH=find; WRG_COLOR=always; wrg -i ystemim")" \
+        './keep/Android.bp:2:    name: "systemimage",
+./keep/Android.bp:6:    name: "vbmetasystemimage",
+./keep/Android.bp:10:    name: "systemimagesystemim",
+./keep/Android.bp:14:    name: "vbmetasystemim",'
+    # 三后端 + 两个 shell 的着色输出逐字一致（分两段后同样成立）
+    if [ "$have_rg" -eq 1 ] || [ -n "$have_fd" ]; then
+        c6_find=$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i ystemim")
+        chk "$sh：分两段着色：auto 与 find 逐字一致" \
+            "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_COLOR=always; wrg -i ystemim")" "$c6_find"
+        if [ "$have_rg" -eq 1 ]; then
+            chk "$sh：分两段着色：rg 与 find 逐字一致" \
+                "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=rg; WRG_COLOR=always; wrg -i ystemim")" "$c6_find"
+        fi
+        if [ -n "$have_fd" ]; then
+            chk "$sh：分两段着色：fd 与 find 逐字一致" \
+                "$(sh_eval "$sh" "cd '$T/src6'; unset NO_COLOR; WRG_SEARCH=fd; WRG_COLOR=always; wrg -i ystemim")" "$c6_find"
+        fi
+    fi
+
     # 后端探测顺序（用只有一个可执行名的假 PATH 逼出来）
     chk "$sh：探测顺序：PATH 里只有 rg → 选 rg" \
         "$(sh_eval "$sh" "PATH='$T/bin-rg'; _wrg_backend")" "rg"
@@ -724,9 +802,9 @@ rc=2"
     chk "$sh：WRG_COLOR=always 精确匹配：只把整个目标名包成红色" \
         "$(sh_eval "$sh" "cd '$T/src2'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg baseTarget")" \
         "./keep/Android.bp:2:    name: \"${esc}[1;31mbaseTarget${esc}[0m\","
-    chk "$sh：WRG_COLOR=always 模糊 -i base：只包住命中的那一段（base）" \
+    chk "$sh：WRG_COLOR=always 模糊 -i base：命中段红粗、名字其余部分绿" \
         "$(sh_eval "$sh" "cd '$T/src2'; unset NO_COLOR; WRG_SEARCH=find; WRG_COLOR=always; wrg -i base")" \
-        "./keep/Android.bp:2:    name: \"${esc}[1;31mbase${esc}[0mTarget\","
+        "./keep/Android.bp:2:    name: \"${esc}[1;31mbase${esc}[0m${esc}[32mTarget${esc}[0m\","
     chk "$sh：NO_COLOR 非空时压过 WRG_COLOR=always（不着色）" \
         "$(sh_eval "$sh" "cd '$T/src2'; NO_COLOR=1; WRG_SEARCH=find; WRG_COLOR=always; wrg baseTarget")" \
         './keep/Android.bp:2:    name: "baseTarget",'

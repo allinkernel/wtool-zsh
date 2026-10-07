@@ -244,7 +244,8 @@ _WRG_RE_MAKE_NAME='^[^=#$:]*:'   # 第一个冒号出现在 = # $ 之前 —— 
 # 三种后端共用的一段 awk：
 #   WRG_PASS=search  扫文件出结果（find / fd 那条路）；
 #   WRG_PASS=recheck 给 stdin 上的 "路径:行号:原文" 做真判命中（rg 那几套正则只是粗筛）；
-#   WRG_PASS=paint   给同一形状的行上色（高亮 = \033[1;31m … \033[0m，只包住命中的那一段）；
+#   WRG_PASS=paint   给同一形状的行上色：命中的那一段红粗（\033[1;31m … \033[0m），
+#                    目标名里其余没匹配到的部分绿、不加粗（\033[32m … \033[0m）；
 #   WRG_PASS=names   扫文件、WRG_PASS=names3 读 "路径:行号:原文"，两者都只枚举目标名，
 #                    最后打印"查询串去 _ 后能命中的最长前缀"（模糊匹配第一步）。
 # 判命中 / 抠目标名 / 枚举名字的逻辑只有这一份，三个后端共用，保证输出一致。
@@ -419,12 +420,20 @@ function split3(s,   i1, i2) {
     fp = substr(s, 1, i1 - 1); fl = substr(s, i1 + 1, i2 - i1 - 1); ft = substr(s, i2 + 1)
     return 1
 }
+# 上色：命中的那一段 = 红 + 加粗；目标名里其余（没匹配到的）部分 = 绿、不加粗。
+# 精确模式命中的就是整个名字，两头都是空的 → 只有红段（和以前一样）；
+# 模糊模式只标第一处命中（hit() 找的就是第一处），后面的（含同一个子串第二次出现）
+# 都算"没匹配到" → 绿。两头空的那对绿码不打，免得输出里多出没用的转义。
 pass == "paint" {
     if (!split3($0)) { print; next }
     if (!cand(fp, ft)) { print; next }
     o = hit(v)
     if (o < 0 || v == "") { print; next }
-    print fp ":" fl ":" substr(ft, 1, vs - 1 + o) "\033[1;31m" substr(ft, vs + o, hlen) "\033[0m" substr(ft, vs + o + hlen)
+    vlen = length(v); mid = ""
+    if (o > 0) mid = mid "\033[32m" substr(ft, vs, o) "\033[0m"
+    mid = mid "\033[1;31m" substr(ft, vs + o, hlen) "\033[0m"
+    if (o + hlen < vlen) mid = mid "\033[32m" substr(ft, vs + o + hlen, vlen - o - hlen) "\033[0m"
+    print fp ":" fl ":" substr(ft, 1, vs - 1) mid substr(ft, vs + vlen)
     next
 }
 pass == "recheck" {

@@ -241,8 +241,14 @@ wrg -i vbmeta_systmmm
   要"连 `.repo/` 一起搜"（找回 `find` 的老行为）就用 `WRG_SEARCH=find`。
 - 三条后端 + 两个 shell 的输出**逐字一致**（测试里用 `cmp` 钉着）。
 
-**高亮**：命中的**那一段**（精确 = 整个目标名；模糊 = 名字里命中的子串）在终端里是
-**加粗红**；管道 / 重定向里不含任何颜色码。
+**高亮**：命中的**目标名**分两段上色，行内其它字符（`name: "` / `",` / `.PHONY: ` 这些）不着色：
+
+- **输入匹配到的那一段** → **加粗红**（精确 = 整个目标名；模糊 = 名字里命中的那一段）；
+- **目标名里其余（没匹配到的）部分** → **绿、不加粗** —— `wrg -i ystemim` 命中
+  `systemimage` 就是 `s`（绿）+ `ystemim`（加粗红）+ `age`（绿）；
+- 绿段**只在模糊模式**里有：精确匹配命中的就是整个名字，没有"其余部分"；
+  模糊下同一个子串在一个名字里出现多次时，**只有第一处**是红粗，后面的算"没匹配到"（绿）；
+- 管道 / 重定向里不含任何颜色码。
 
 - `WRG_COLOR=auto`（默认：只在 stdout 是终端时上色）/ `always` / `never`；
 - `NO_COLOR` **非空**时一律不上色（优先级最高，压过 `WRG_COLOR=always`）；
@@ -257,17 +263,23 @@ wrg -i vbmeta_systmmm
 
 ```sh
 wrg libfoo           # ./foo/Android.mk:3:LOCAL_MODULE := libfoo    ← libfoo 标红加粗
-wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标红加粗
+wrg -i app           # ./bar/Android.bp:7:    name: "BarApp",       ← App 标红加粗、Bar 绿
                      # ./foo/Android.mk:8:LOCAL_PACKAGE_NAME := FooApp
+                     #                                          ↑ Foo 绿
 wrg systemimage      # ./build/make/core/Makefile:924:.PHONY: systemimage
-                     # ./build/make/core/Makefile:925:systemimage:  ← systemimage 标红加粗
+                     # ./build/make/core/Makefile:925:systemimage:  ← systemimage 标红加粗（精确：没有绿段）
+wrg -i ystemim
+                     # ./build/make/core/Makefile:924:.PHONY: systemimage
+                     #                          ↑ s 绿、ystemim 标红加粗、age 绿
+                     # ./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage
+                     #                                  ↑ vbmetas 绿、ystemim 标红加粗、age 绿
 wrg -i vbmeta_systmmm
                      # 用户输入vbmeta_systmmm
                      # 实际匹配vbmetasyst
                      # 匹配目标名如下：
                      # ./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage
                      # ./build/make/core/main.mk:1384:vbmetasystemimage: …
-                     #                          ↑ 只有 vbmetasyst 这 10 个字符标红
+                     #                          ↑ vbmetasyst 标红加粗、后面的 emimage 绿
 ```
 
 > 注释里的目标名（`# LOCAL_MODULE := xxx`）不算；精确匹配不认前缀
@@ -366,15 +378,15 @@ wrg -i vbmeta_systmmm
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # rg + fd 都装了：279 通过 / 2 失败（那 2 条是 win 的老毛病，见下）；
-                           # 只有 rg：261；只有 fd：255；两个都没有（纯 find 兜底）：231
+bash tests/env_test.sh     # rg + fd 都装了：299 通过 / 2 失败（那 2 条是 win 的老毛病，见下）；
+                           # 只有 rg：279；只有 fd：273；两个都没有（纯 find 兜底）：245
                            # —— 都带同样的 2 条失败，以输出为准
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
 
 > ⚠️ 本机（WSL）上 `win | head -1` 那两条会因为 `head` 提前关掉管道、`echo` 报
 > `write error: Broken pipe` 而 FAIL（**和 wrg 无关、改动前就在**）；容器里
-> （`wrg-test`，非 WSL、没有 `ip`）同一份用例是 **275 通过 / 0 失败**。
+> （`wrg-test`，非 WSL、没有 `ip`）同一份用例是 **297 通过 / 0 失败**。
 
 它把**同一张用例表**喂给两个 shell：别名在不在、`_up_to_have_dir` / `cw` 能不能找到
 `.repo`、`pdd`/`pss` 能不能跳回来、`start` 的补全注册、`win` 的 WSL 分支**逐字等于**
@@ -391,12 +403,16 @@ bash tests/env_test.sh     # rg + fd 都装了：279 通过 / 2 失败（那 2 �
 强制指定但可执行不存在（rc=2）、高亮（管道里 `grep -c ESC` = 0、`WRG_COLOR=always` 的
 精确字节、模糊只包住"实际匹配"的那一段、`NO_COLOR` 压过 `always`、pty 下自动上色）、
 以及"隐藏目录里 rg/fd 搜不到、find 搜得到"这条语义差异；
-再加两组 2026-10-07 新钉的：**假阳性**（`$T/src4`：TAB/空格缩进的 recipe、`define` 体、
+再加三组 2026-10-07 新钉的：**假阳性**（`$T/src4`：TAB/空格缩进的 recipe、`define` 体、
 `$(info …)`、注释、`VAR :=`、`export A :=`、TAB 缩进的目标形状行 —— 每条都精确 + 模糊
-各断言一遍"不命中"，同时断言真目标照旧命中、输出里 `grep -c '@echo'` = 0）和
+各断言一遍"不命中"，同时断言真目标照旧命中、输出里 `grep -c '@echo'` = 0）、
 **新模糊算法**（`$T/src5`：截断到 `vbmetasyst` 的三行表头逐字、表头第一行保留用户写的 `_`、
 `_` 归一等价、正常命中不打表头、下界 4（`vbmzzzzzz` 不命中、`vbme` 命中）、
-`vbm` 这种不足 4 个字符的查询整个试、结果与三后端 `cmp` 一致）。
+`vbm` 这种不足 4 个字符的查询整个试、结果与三后端 `cmp` 一致）和
+**分两段着色**（`$T/src6`：`-i ystemim` 四行的完整 ANSI 字节 —— 匹配段在中间（前后都绿）、
+同一子串出现两次时只有第一处红、匹配段正好在结尾时没有后段绿码；外加"精确模式整名红粗、
+一个绿码都没有"、"模糊整名命中也没有绿段"、管道零 ANSI、`NO_COLOR` 压过 `always`、
+auto / rg / fd 与 find 的着色输出逐字一致）。
 
 > 用例表是共用的，**每加一条两个 shell 都会跑**；后端相关的用例按"本机有没有那个
 > 可执行文件"跳过，所以数字会随环境变 —— 以脚本最后打印的那一行为准
