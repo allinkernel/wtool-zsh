@@ -7,6 +7,130 @@
 
 ---
 
+## ✅ `wrg` 修假阳性 + 模糊匹配换成"去 `_` + 逐级截断前缀" —— 做完（2026-10-07，提交 `55cd9d9`）
+
+**做了什么**（`env.zsh` + `env.bash` 同改、逐字等价，只差 `[[ ]]` vs `[ ]`；`wrg` 段 478 行）：
+
+① **假阳性**（用户实测报的两行，都在 `build/make/core/Makefile`）——两条新规则：
+
+- **以 TAB 开头的行一律不算目标定义**（`rule_prefix()` / `cand_bp()` / `cand_mk()` 各一份）：
+  Makefile 的 recipe 必须 TAB 缩进，那是命令行不是目标；
+- **冒号前那段里有 `"` 或 `'` 的整行否决**（`@echo "Target system fs image: $(1)"` 这种字符串）；
+  `.PHONY:` 声明词里带引号的也跳过（和原有的 `$` `=` `\` 一个待遇）。
+
+  为什么两条都要：`:3616:`（`\t@echo "Install system fs image: $@"`）是 TAB recipe，
+  **TAB 那条**挡得住；`:3514:`（`  @echo "Target system fs image: $(1)"`）缩进是**两个空格**
+  （它在 `define build-systemimage-target` 体内），TAB 那条**管不着**它 —— 靠**引号那条**才挡掉。
+  `.PHONY: $(TARGETS)` 这种老反例不受影响。
+
+② **模糊匹配（`-i`）按新语义重做**（`architecture.md` §4.5.3）：
+
+- **枚举目标名**：新增 `_wrg_prefix`，先用**和搜索同一个后端**把三类文件里的所有目标名抠一遍
+  （awk 的 `WRG_PASS=names` / `names3`，`take()` 进收集分支），**每次运行都重扫、不缓存**；
+  `find -exec {} +` / `fd -X` 会分批 → 每批各打印一行，shell 侧取最长的那行；
+- **归一化**：`key()` = 去掉 `_` + 转小写，查询串和候选名两边都过；
+- **逐级截断**：`addname()` 算"和归一化查询的最长公共前缀"，`END` 里只在前缀长度
+  ≥ `min(4, 查询长度)` 时打印 `substr(npat, 1, maxlen)` —— 也就是**实际匹配的前缀**；
+  **最短试到 4 个字符**，查询本身不足 4 个字符就整个试；
+- **表头**：`实际匹配` 与"用户输入去 `_` 后"**不同**时才打三行
+  （`用户输入<原样>` / `实际匹配<前缀>` / `匹配目标名如下：`），正常命中保持干净输出；
+- **命中仍是子串匹配**（不锚定目标名开头）—— 既有的 `-i kphony1` 命中 `mkphony1` 不能退化，
+  用户那个例子（`vbmeta_systmmm` → `vbmetasyst` → `vbmetasystem*`）也满足；
+- **高亮**：包住前缀在**原文**里覆盖的那一段（`hit()` 把归一化下标映射回原串）——
+  `vbmeta_system_other` 里的 `vbmetasyst` 连中间的 `_` 一起包住；
+- **rg 那条路的粗筛**换成 `_wrg_re_us`：把前缀的每个字符转义后**逐字挂一个 `_*`**、整段
+  `(?i:…)`。归一化只做"去掉 `_`"，所以"归一化后含前缀"⇔"原文匹配这条正则"——
+  既不漏带 `_` 的名字（`vbmeta_system_mk` 能被 `vbmetasystem` 命中），元字符也仍是字面量。
+
+**验证到什么程度**：
+
+- `bash tests/env_test.sh`（本机 WSL，rg 14.1.0 + fd 9.0.0）：**277 通过 / 2 失败**（改前 199/0；
+  新加 78 条，每个 shell 39 条）。那 2 条失败是 `win | head -1` 的破管道老毛病
+  （`/tmp/old_env.zsh` 那份**改动前**的代码同样失败，与 wrg 无关）；
+  把 PATH 收窄成受限目录另测三种：只有 rg = **259**、只有 fd = **253**、
+  都没有（纯 find）= **229**（失败数都是那同样的 2 条）；
+- 容器 `wrg-test`（Ubuntu 24.04、非 WSL、没有 `ip`、rg + fdfind）：**275 通过 / 0 失败**
+  （差 4 条是 WSL/`ip` 那些"按本机实际情况断言"的用例，与 wrg 无关）；
+- **新用例对旧实现会挂**：把新测试脚本配 `git show HEAD:env.zsh|env.bash`（改动前那份）
+  在 `/tmp/wt-regress` 里跑 → **38 条 FAIL（19 个/shell）**，正好是假阳性 + 新模糊算法那批，
+  说明用例真的钉住了这两个改动（不是"怎么改都过"）；
+- **容器实测**（`/aosp/android16-release`，真 AOSP）：
+  - `wrg system`：**旧**（`/tmp/old_env.zsh`）→ 命中所报那两行
+    （`:3514:  @echo "Target system fs image: $(1)"`、`:3616:\t@echo "Install system fs image: $@"`）；
+    **新** → `wrg: 没有匹配 'system' 的目标名`，rc=1（树里没有真名叫 `system` 的目标）；
+  - `wrg systemimage` → **5 行**（`:924:.PHONY: systemimage`、`:925:systemimage:`、`:3623:`、`:7645:`、`:7736:`）；
+    `wrg -i systemimage` → **15 行**（多了 `systemimage-nodeps snod`、`main.mk:1383/1384 vbmetasystemimage`，
+    以及 `system_image_defaults` / `aosp_system_image` 这类**带 `_` 的 bp 名字** —— 老代码按原文子串匹配，
+    这些是搜不到的）；三后端 stdout+stderr **`cmp` 逐字一致**；
+  - `wrg -i vbmeta_systmmm` → 表头 + 2 行：
+    ```
+    用户输入vbmeta_systmmm
+    实际匹配vbmetasyst
+    匹配目标名如下：
+    ./build/make/core/main.mk:1383:.PHONY: vbmetasystemimage
+    ./build/make/core/main.mk:1384:vbmetasystemimage: $(INSTALLED_VBMETA_SYSTEMIMAGE_TARGET)
+    ```
+    `WRG_COLOR=always … | cat -v` → `./build/make/core/main.mk:1383:.PHONY: ^[[1;31mvbmetasyst^[[0memimage`
+    （只包住实际匹配的那 10 个字符）；`wrg -i vbmeta_system`（带 `_`）→ 同 2 行、**不打表头**；
+  - **三后端 `cmp`**：`find` / `fd` / `rg` / `auto` 四种跑 5 条探针（精确 `system`、`systemimage`；
+    模糊 `systemimage`、`vbmeta_systmmm`、`vbmeta_system`），**15 组 `cmp` 全 OK**（stdout + stderr 都比）；
+    管道里 `grep -c ESC` **全是 0**；`WRG_COLOR=always` 的模糊/精确着色输出在四种后端间也**全 OK**；
+  - 耗时（容器，页缓存热，毫秒级只报秒）：
+
+    | 探针 | rg | fd | find | auto |
+    |---|---|---|---|---|
+    | 精确 `systemimage` | 2.79s | 2.27s | 10.46s | 2.82s |
+    | 模糊 `-i vbmeta_systmmm` | 5.79s | 4.96s | 20.42s | 5.89s |
+
+    模糊 ≈ 2× 精确（多了一整遍"枚举目标名"的扫描），这是新算法的固定成本；
+  - **独立交叉核对**（不碰 `wrg` 那段 awk、也不用 shell）：
+    ① Python 另写一份规则复算 → 归一化目标名 **44,054** 个（`Android.bp` 38,610 / `Android.mk` 73 /
+    Makefile 类 5,520），`vbmeta_systmmm` → 前缀 `vbmetasyst`、命中 2 行，
+    **与 `wrg` 的 find/fd/rg/auto 四种输出 `cmp` 逐字一致**；
+    ② `rg -o` + `awk`/`tr` 独立提取：`Android.bp` 的 `name:` **38,610** 个、`Android.mk` 的
+    `LOCAL_MODULE|LOCAL_PACKAGE_NAME` **73** 个 —— 和 ①对得上；
+    ③ `rg -c -g Android.bp '^\t+name[[:space:]]*:'` → **空**（这个 AOSP 树里没有 TAB 缩进的 `name:`，
+    所以"TAB 一律否决"在这个树上零代价）；
+- `zsh -n env.zsh` / `bash -n env.bash` / `bash -n tests/env_test.sh` 全过；
+  `env.zsh` 与 `env.bash` 的 `wrg` 段机械转换后**逐字相同**（`/tmp/z2b.py` 那套检查）。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/shell/zsh && bash tests/env_test.sh          # 277 通过, 2 失败（2 条是 win 的老毛病）
+docker exec wrg-test bash -lc 'cd /aosp/android16-release && source /wtool/shell/zsh/env.bash
+  wrg system; echo rc=$?'                                     # 没有匹配 'system' 的目标名 / rc=1
+docker exec wrg-test bash -lc 'cd /aosp/android16-release && source /wtool/shell/zsh/env.bash
+  wrg -i vbmeta_systmmm'                                      # 三行表头 + main.mk:1383/1384
+bash /tmp/wrg_cmp.sh                                          # 三后端 cmp + 耗时（脚本在容器 /tmp 里）
+```
+
+**已知边界（写进 `architecture.md` §4.5.1、README 的注释块与排错表了）**：
+
+- **残留假阳性**：`$(error …)` / `$(warning …)` 这种跨行字符串的**续行**里是一句散文时，
+  里面的词还是会被当成目标名 —— 真 AOSP 例：`wrg apk` 会命中
+  `./build/make/core/Makefile:104:     Prebuilt apk found in PRODUCT_COPY_FILES: $(1), …`。
+  试过的两条修法**都会误伤真目标**，所以**没做**：
+  ① "行尾反斜杠 + 冒号前多于一个词"否决 → 真 AOSP 里有 24 条这种行，其中
+  `systemimage-nodeps snod:`、`.PRECIOUS .INTERMEDIATE:`、`firework.o newdemo.o …:` 都是**真目标**；
+  ② 跟踪 `define`/`endef` 块 → `reportmissinglicenses` / `reportallnoticelibrarynames` /
+  `test-art-run-test` 这些真目标会被整块吞掉（它们确实定义在 `define` 块附近）；
+  另外"上一行是不是续行"这条上下文 **rg 那条路拿不到**（`recheck` 只看到 rg 筛出来的行），
+  加了它三条后端就不一致了；
+- 模糊匹配**只从尾部截断**：开头/中间写错救不了；前缀越短命中越多（表头就是告诉你它截到多短）；
+- 枚举那一步的退出码**不检查**（`PIPESTATUS` 和 zsh 的 `pipestatus` 写法不同，为了两份逐字等价就不取）；
+  真出错时后面那次搜索照样会报。
+
+---
+
+## ⬜ `wrg`：`$(error …)` 续行散文仍会被当成目标名（上面那条"已知边界"的残留）
+
+要修得先解决"跨行上下文"：要么让 rg 那条路也能看到上一行（例如改成列文件 + awk 读文件，
+或者 rg `-U` 多行匹配再自己修正行号），要么做括号/续行配对。**先想清楚三后端一致性再动**，
+别为了这一条把 `find`/`fd`/`rg` 的输出差异引回来。
+
+---
+
 ## ✅ `wrg` 扩到第三类文件：Makefile 的构建目标名 —— 做完（2026-10-07，提交 `3f850ed`）
 
 **做了什么**（`env.zsh` + `env.bash` 同改，两份的 `wrg` 段各 324 行（分隔线注释到函数结尾，和上一轮同一口径）、逐字等价）：
