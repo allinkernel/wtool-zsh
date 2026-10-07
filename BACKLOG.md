@@ -8,6 +8,76 @@
 
 ---
 
+## ✅ `wrg` 高亮改成"分两段"：命中段红粗 + 目标名其余部分绿 —— 做完（2026-10-07，提交 `98d976e`）
+
+**需求（用户 2026-10-07）**：模糊匹配（`wrg -i <输入>`）命中时**整个目标名**都要着色 ——
+用户输入匹配到的那一段**红 + 加粗**（`\033[1;31m…\033[0m`，不变），目标名里**其余（没匹配到的）
+部分绿、不加粗**（`\033[32m…\033[0m`）。`wrg -i ystemim` 命中 `systemimage` 要渲染成
+`\033[32ms\033[0m\033[1;31mystemim\033[0m\033[32mage\033[0m`（前缀 `s` 绿 / `ystemim` 红粗 / 尾巴 `age` 绿）。
+
+**做了什么**（`env.zsh` + `env.bash` 同改、逐字等价，只差 `[[ ]]` vs `[ ]`；`wrg` 段 478 → 487 行。
+**只动 `WRG_PASS=paint` 那一层** —— 判命中 / 抠目标名 / 枚举 / 排序 / 退出码 / 后端选择一律没动）：
+
+- `paint` pass 里用 `vlen = length(v)` 定目标名结尾，`mid` 拼三段：命中段**之前**一段绿
+  （`o > 0` 才打）、命中段红粗、命中段**之后**一段绿（`o + hlen < vlen` 才打），
+  最后 `print fp ":" fl ":" substr(ft, 1, vs - 1) mid substr(ft, vs + vlen)`；
+  原来是 `substr(ft, 1, vs - 1 + o) … substr(ft, vs + o + hlen)`（只包命中段、名字其余部分原样）；
+- **精确模式不变**：命中的就是整个名字，两头都空 → 自动没有绿段；模糊但**整名命中**也没有绿段；
+- **只标第一处**：`hit()` 找的是第一处命中，同一个子串在一个名字里出现多次时，
+  第二次出现连同尾巴一起落在绿段里；
+- 行内其它字符（`name: "` / `",` / `.PHONY: ` / `: $(…)`）仍然不着色（`WO[]` 定名字起点、
+  `length(v)` 定名字结尾，绿段只在名字内部切）。
+
+**验证到什么程度**：
+
+- `bash tests/env_test.sh`（本机 WSL，rg 14.1.0 + fd 9.0.0）：**299 通过 / 2 失败**（改前 279/2；
+  新加 20 条 = 每个 shell 10 条；那 2 条失败还是 `win | head -1` 的破管道老毛病 ——
+  `git show HEAD~1:env.zsh` 那份**改动前**的代码同样失败，与 wrg 无关）；
+  PATH 收窄成受限目录另测三种（**这次三种都实测过**）：只有 rg = **279**、只有 fd = **273**、
+  都没有（纯 find）= **245**（失败数都是那同样的 2 条）；
+- 容器 `wrg-test`（Ubuntu 24.04、**mawk 1.3.4**、非 WSL、没有 `ip`、rg + fdfind）：
+  **297 通过 / 0 失败**；
+- **新用例对旧实现会挂**：新测试脚本配 `git show HEAD~1:env.zsh|env.bash` 在 `/tmp/wt-regress` 里跑
+  → **291 通过 / 10 失败**（4 条/shell：3 条改过的旧着色断言 + 新的 `-i ystemim` 四行字节断言）；
+- `zsh -n env.zsh` / `bash -n env.bash` / `sh -n env.bash` / `bash -n tests/env_test.sh` 全过；
+  `env.zsh` 与 `env.bash` 的 `wrg` 段去掉 `[` `]` 后逐字相同，`_WRG_AWK` 段 md5 相同
+  （`5da5bb943f58781c6eb65d863a758089`）；
+- **容器实测**（`/aosp/android16-release`，真 AOSP，默认后端 rg）：
+
+  ```
+  $ NO_COLOR= WRG_COLOR=always wrg -i ystemim | cat -v | head -6
+  ./build/make/core/Makefile:924:.PHONY: ^[[32ms^[[0m^[[1;31mystemim^[[0m^[[32mage^[[0m
+  ./build/make/core/Makefile:925:^[[32ms^[[0m^[[1;31mystemim^[[0m^[[32mage^[[0m:
+  ./build/make/core/Makefile:3623:^[[32ms^[[0m^[[1;31mystemim^[[0m^[[32mage^[[0m: $(INSTALLED_SYSTEMIMAGE_TARGET)
+  ./build/make/core/Makefile:3627:.PHONY: ^[[32ms^[[0m^[[1;31mystemim^[[0m^[[32mage-nodeps^[[0m snod
+  ./build/make/core/Makefile:3628:^[[32ms^[[0m^[[1;31mystemim^[[0m^[[32mage-nodeps^[[0m snod: $(filter-out systemimage-nodeps snod,$(MAKECMDGOALS)) \
+  ./build/make/core/Makefile:7645:^[[32ms^[[0m^[[1;31mystemim^[[0m^[[32mage^[[0m: $(INSTALLED_QEMU_SYSTEMIMAGE)
+  ```
+
+  `main.mk:1383/1384` 的 `vbmetasystemimage` 同理：绿 `vbmetas` + 红粗 `ystemim` + 绿 `age`；
+  三后端（auto / rg / fd vs find）×（着色 / 纯文本）**9 组 `cmp` 全 OK**（`cat -v` 与原始字节都比），
+  4 份着色输出各 15 行、ESC 计数都是 15，4 份纯文本 ESC 计数**全是 0**，rc=0、stderr 都是 0 字节；
+  精确 `wrg systemimage` 仍整名红粗（`grep -c` 绿码 = 0）、`NO_COLOR=1` 压过 `WRG_COLOR=always`；
+- 文档：`architecture.md` §4.5.2 重写成"两段"表 + 边界说明（§4.5 / §4.5.1 附近提到高亮的两处同步了），
+  §5 补第六棵树 `$T/src6` 与四组条数；`README.md` 的「高亮」段与示例补了绿段。
+
+**判据（可原地重跑）**：
+
+```sh
+cd ~/self/wtool/shell/zsh && bash tests/env_test.sh          # 299 通过, 2 失败（2 条是 win 的老毛病）
+docker exec wrg-test bash -lc 'cd /aosp/android16-release && source /wtool/shell/zsh/env.bash
+  NO_COLOR= WRG_COLOR=always wrg -i ystemim | cat -v | head -6'
+docker exec wrg-test bash /tmp/wrg6_cmp.sh                   # 三后端 cmp + ESC 计数（脚本在容器 /tmp 里）
+```
+
+**已知边界（写进 `architecture.md` §4.5.2 了）**：
+
+- 绿段只在**模糊**模式出现：精确匹配、`-i` 整名命中都没有绿段（"没匹配到的部分"为空 → 不打那对码）；
+- 只标**第一处**命中；后面的（含同一子串第二次出现）算"没匹配到" → 绿；
+- 绿的只是**目标名内部**：`name: "` / `",` / `.PHONY: ` / `: $(…)` 这些行内其它字符仍不着色。
+
+---
+
 ## ✅ `wrg` 修假阳性 + 模糊匹配换成"去 `_` + 逐级截断前缀" —— 做完（2026-10-07，提交 `55cd9d9`）
 
 **做了什么**（`env.zsh` + `env.bash` 同改、逐字等价，只差 `[[ ]]` vs `[ ]`；`wrg` 段 478 行）：
