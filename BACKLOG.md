@@ -640,3 +640,18 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
   设了 → 两行都在。两 shell 各 4 条。
 - **判据**：`tests/env_test.sh` 全绿（除既有 win share 前缀那 2 条）；
   `WIN_IP=203.0.113.7 zsh -c '. env.zsh; this_is_wsl(){ return 1; }; win'` → 两行。
+
+## ✅ 2026-10-07：两条"常驻失败"的 `win` 用例其实是**测试写错**（EPIPE 噪音并进 stdout）
+
+- **现象**：`tests/env_test.sh` 长期 `2 失败`（bash/zsh 各一条）：
+  `win（非 WSL）按最长前缀挑 share…（期望 [//10.1.2.3/ws/ab] 实际 [//10.1.2.3/ws/ab
+…write error: Broken pipe]）`。
+- **根因**（不是 `win` 算错）：用例里写的是 `win | head -1`，`head` 读一行就关管道 →
+  `win` 的第二行（scp 那行）`echo` 撞 **EPIPE**，shell 把 `write error: Broken pipe`
+  打到 **stderr**；而测试助手 `sh_eval` 是 `2>&1` 合并的 → 噪音进了被测值。
+  `--dry-run` 式的自查：单跑那段（不接 `head`）输出完全正确，`//10.1.2.3/ws/ab` ✓。
+- **修法**：用例改成 `win 2>/dev/null | head -1`（只取第一行时明确丢掉 stderr）。
+- **结果**：**525 通过 / 0 失败**（项目首次全绿）。
+- **教训（写给下一个人）**：给**多行输出**的命令接 `| head` 时，若那条流水线又把 stderr 并进 stdout，
+  就会把 EPIPE 噪音当成"实际值"——断言会以一个极像真 bug 的样子失败。
+  判据：把同一条命令**不接 `head`** 跑一遍，输出对 → 就是测试的锅。

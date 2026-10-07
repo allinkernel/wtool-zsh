@@ -365,7 +365,7 @@ $(whoami)@10.1.2.3:$target"
     chk "$sh：win（非 WSL）按最长前缀挑 share，且按路径分隔符对齐" \
         "$(sh_eval "$sh" "$win_srv
             cd '$T/ws/ab'
-            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win | head -1")" "//10.1.2.3/ws/ab"
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win 2>/dev/null | head -1")" "//10.1.2.3/ws/ab"
 
     rc=0
     out=$(sh_eval "$sh" "$win_srv
