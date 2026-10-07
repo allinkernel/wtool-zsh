@@ -120,8 +120,8 @@ done
 - 是 WSL → `wslpath -w . || return 1`，行为与加服务器分支之前逐字一致；
 - 不是 WSL → `_win_server`：
   1. `target` = `realpath -m -- "$PWD"`（失败退回 `$PWD`）；
-  2. `ip` = `_win_ip`：`$WIN_IP` 优先，否则 `ip -4 addr` 里第一个非 `lo` 的 `inet` 地址
-     （`ip` 不在就返回 1）。取不到 → stderr 两行提示设 `WIN_IP`，返回 1，**不打印任何一行**；
+  2. `ip` = `_win_ip`：**只读 `$WIN_IP`**（2026-10-07 起不再 `ip -4 addr` 探测 —— 服务器上探到的
+     是内网/VPC 地址，猜错比不猜更坏）。没设 → 返回 1，stderr 两行提示设 `WIN_IP`，**不打印任何一行**；
   3. `conf` = `${WTOOL_SMB_CONF:-/etc/samba/smb.conf}`；
   4. `_win_smb_shares` 用 awk 把 `[share]` 段与段内 `path =` 抽成 `share|path`
      （跳过 `#` / `;` 行，去首尾空白与首尾引号）；
