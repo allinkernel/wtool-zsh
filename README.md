@@ -158,8 +158,11 @@ win        # 打路径，一行或两行
 
 | 行 | 内容 | 怎么算出来的 |
 |---|---|---|
-| 1 | `//<ip>/<share><相对路径>` | 读 `/etc/samba/smb.conf` 的 `[share]` + `path = …`，取**最长前缀匹配**目标目录的那个 share（按路径分隔符对齐：share `path=/srv/share` 不会被 `/srv/share2` 命中），拼上目标目录相对 share 的那段 |
-| 2 | `<whoami>@<ip>:<绝对路径>` | 目标目录的绝对路径（`realpath -m` 规范化过），可以直接拿去 `scp` |
+| 1 | `\\<ip>\<share><相对路径>` | **Windows**：资源管理器地址栏 / CMD / PowerShell 直接能用（UNC，路径分隔符也换成 `\`） |
+| 2 | `//<ip>/<share><相对路径>` | **Linux**：`mount -t cifs //srv/share /mnt/x`、`smbclient //srv/share` |
+| 3 | `smb://<ip>/<share><相对路径>` | **浏览器 / macOS Finder / GNOME Files**：粘进地址栏就能开 |
+| 4 | `<whoami>@<ip>:<绝对路径>` | 直接 `scp`/`rsync` 用 |
+| ~~1~~ | ~~`//<ip>/<share><相对路径>`~~ | ~~旧版只有这一行~~ | 读 `/etc/samba/smb.conf` 的 `[share]` + `path = …`，取**最长前缀匹配**目标目录的那个 share（按路径分隔符对齐：share `path=/srv/share` 不会被 `/srv/share2` 命中），拼上目标目录相对 share 的那段 |
 
 - `<ip>`：**必须来自环境变量 `WIN_IP`** —— 本命令**不做 `ip addr` 探测**（服务器上探到的
   常常是内网/VPC 地址，猜错比不猜更坏）。没设就报错、不打印任何一行。

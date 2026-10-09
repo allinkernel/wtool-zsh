@@ -176,7 +176,14 @@ _win_server ()
 ${shares}
 EOF
         if [[ -n "${best}" ]]; then
+            # 三种写法都给：
+            #   \\ip\share\rel   → Windows 资源管理器地址栏 / CMD / PowerShell（UNC）
+            #   //ip/share/rel   → Linux：mount -t cifs //srv/share 、smbclient //srv/share
+            #   smb://ip/share/rel → 浏览器 / macOS Finder / GNOME Files
+            _unc=$(printf '%s' "${best_rel}" | sed 's|/|\\|g')
+            printf '%s\n' "\\\\${ip}\\${best}${_unc}"
             echo "//${ip}/${best}${best_rel}"
+            echo "smb://${ip}/${best}${best_rel}"
         else
             echo "win: ${conf} 里没有 share 的 path 匹配 ${target}" >&2
             rc=1

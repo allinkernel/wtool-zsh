@@ -357,15 +357,17 @@ for sh in bash zsh; do
     # ---- win 的服务器分支（非 WSL）：WSL 机上用函数替身压低 this_is_wsl，两边跑同一张表 ----
     win_srv='this_is_wsl () { return 1; }'
     target=$(cd "$T/ws/a/b" && /usr/bin/pwd -P)
-    want="//10.1.2.3/proj/b
+    want="\\\\10.1.2.3\\proj\\b
+//10.1.2.3/proj/b
+smb://10.1.2.3/proj/b
 $(whoami)@10.1.2.3:$target"
-    chk "$sh：win（非 WSL）给出 samba 路径 + scp 路径两行" \
+    chk "$sh：win（非 WSL）给出 UNC + // + smb:// + scp 四行" \
         "$(sh_eval "$sh" "$win_srv
             WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win")" "$want"
     chk "$sh：win（非 WSL）按最长前缀挑 share，且按路径分隔符对齐" \
         "$(sh_eval "$sh" "$win_srv
             cd '$T/ws/ab'
-            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win 2>/dev/null | head -1")" "//10.1.2.3/ws/ab"
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win 2>/dev/null | head -1")" '\\10.1.2.3\ws\ab'
 
     rc=0
     out=$(sh_eval "$sh" "$win_srv
