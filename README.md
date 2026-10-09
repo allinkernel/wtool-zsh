@@ -7,38 +7,62 @@
 （优先用 `rg` / `fd`，都没有才回退 `find`，命中的那段标红加粗），
 以及 `gs` / `gl` / `s` / `kls` 这类短别名。
 
+> **这份 README 怎么读**：主体是最前面的「**命令清单**」—— 本仓库提供的**每一条**命令，
+> 各干什么、怎么敲、什么退出码、依赖哪个变量，都在那里；后面几节是加载方式、安装、
+> 配置项、快捷键、排错、测试、文件。**发布产物 / 下载在最后一节**（只有一行链接）。
+
 - 项目路径（**路径就是它的身份**，没有单独的 `id`，见 ADR-0037）：`shell/zsh`
   —— 名字是历史遗留，里面**已经不是纯 zsh 了**
 - 加载优先级：`priority=20`（在 `shell/oh-my-zsh`(10) 之后加载）
-- 本仓库**没有 `scripts/`**（不需要构建/安装脚本）：装到 `$HOME` 里的只有
-  `env.zsh` / `env.bash` 两个文件的 rc 块，外加一个测试
+- 本仓库**没有 `scripts/build.sh` / `scripts/install.sh`**（不需要构建/安装脚本）：
+  装到 `$HOME` 里的只有 `env.zsh` / `env.bash` 两个文件的 rc 块，外加一个测试
+  （`scripts/release.json` 不是脚本，是发布时引擎写的下载清单，见最后一节「下载」）
 
 ---
 
 ## 功能说明
 
-### 1. 装的是哪两份文件、被谁加载
+本仓库装到 rc 里的东西**只有别名和函数**，一条命令都不多：**10 个别名 + 13 个函数**
+（两份文件里各定义一遍，行为等价）。
 
-| 文件 | 给谁 | 被谁 source |
+### 1. 命令清单（一眼看全）
+
+**别名（10 个）** —— 别名就是展开后的那条命令，本仓库不加任何包装：
+
+| 别名 | 展开成 | 用途 |
 |---|---|---|
-| `env.zsh` | zsh | `~/.zshrc` 里的 wtool 块 |
-| `env.bash` | bash | `~/.bashrc` 里的 wtool 块 |
+| `gs` | `git status` | 看工作区状态 |
+| `gss` | `git status --short` | 同上，短格式 |
+| `gd` | `git diff` | 看未暂存的改动 |
+| `gds` | `git diff --staged` | 看已暂存的改动 |
+| `gll` | `git log` | 看提交历史 |
+| `gl` | `git log` | 同上（`gll` 的同义词） |
+| `s` | `ls` | 列目录 |
+| `sl` | `ls` | 同上 |
+| `lks` | `ls` | 同上 |
+| `kls` | `ls` | 同上 |
 
-两份**内容等价**（同一批别名/函数、同样的报错、同样的退出码），区别只有语法：
-zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
+**函数（13 个）** —— 每条都在下面 `§3` 里有对应的小节：
 
-> 受众里有人机器上**没有 zsh**（公司机器很常见），bash 版是必需品。
-> **改一个就要在另一个里做等价修改**，`tests/env_test.sh` 会用同一张用例表把两个 shell 都跑一遍。
+| 命令 | 一句话用途 | 用法 | 退出码 |
+|---|---|---|---|
+| `cw` | 跳到 repo 工作区根（往上找最近的 `.repo`） | `cw` | `0` 找到；`1` 没找到（stderr 提示） |
+| `gba` | 列所有分支（有 `batcat` 就上色） | `gba` | 管道末端 `cat`/`batcat` 的码（git 失败也常常是 `0`） |
+| `pwd` | 打印当前目录，**同时记进一个文件**（覆盖了系统的 `pwd`） | `pwd` | `tee` 的码（正常 `0`） |
+| `pss` | 打印"上次 `pwd` 记下的路径" | `pss` | `0`；记的文件不在时 `1`（`cat` 的报错） |
+| `pdd` | `cd` 回"上次 `pwd` 记下的路径" | `pdd` | `0`；目录没了时 `1`（`cd` 的报错） |
+| `this_is_wsl` | 本机是不是 WSL | `this_is_wsl` | `0` 是；`1` 不是 |
+| `this_is_not_wsl` | 与上一条正好相反 | `this_is_not_wsl` | `0` 不是；`1` 是 |
+| `win` | 把目录翻成 mac / win / scp / wsl / linux 五方各自能用的路径（一张两列表格） | `win` / `win <路径>` | `0` 正常（没设 `WIN_IP`、没配 samba 也是 `0`）；`2` 参数以 `-` 开头 |
+| `proxy_on` | 开代理：导出 6 个代理变量、追加 `no_proxy` | `proxy_on [IP] [端口]` | `0`；`2` 没值且不是交互终端、或端口不是数字 |
+| `proxy_off` | 关代理：清 6 个变量、**还原** `no_proxy` | `proxy_off` | `0` |
+| `start` | 在 Windows 侧 `Start-Process` 打开程序（**只 WSL 有效**） | `start <程序>` | `1` 非 WSL；WSL 上返回 `powershell.exe` 的码 |
+| `wrg` | 在当前目录树下找 `Android.bp` / `Android.mk` / `Makefile` 的目标名 | `wrg [选项] <名字>` / `wrg [选项] -e <名字> …` | `0` 有命中 / `-h` / `-v`；`1` 没命中或树下没有这三类文件；`2` 用法、选项、环境变量值不对 |
+| `_up_to_have_dir` | 从 `$PWD` 往上找含某名字的那层目录（`cw` 的基础，也能直接用） | `_up_to_have_dir <目录名>` | `0` 找到（把那一层打印出来）；`1` 一路到 `/` 都没有 |
 
-`wtool.xml` 里就是这么声明的（没有 `<link>`，全部靠注入 env 块提供；也**没有 `id=` 属性** ——
-项目身份就是相对工作区的路径 `shell/zsh`，写了 `id=` 反而会被引擎硬报错，见 ADR-0037）：
-
-```xml
-<wtool schema="1" priority="20">
-  <zshrc  src="env.zsh"/>
-  <bashrc src="env.bash"/>
-</wtool>
-```
+> 除此之外**没有别的命令**（`_win_*` / `_wrg_*` 那十几个是内部辅助函数，别在 rc 里调）。
+> 怎么自己核一遍：`grep -n '^ *alias ' env.zsh` +
+> `grep -n '^[A-Za-z_][A-Za-z0-9_]* ()' env.zsh`。
 
 ### 2. 别名（10 个，两份文件完全一样）
 
@@ -57,7 +81,10 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
 
 > `s` / `sl` / `lks` / `kls` 四个名字指向同一个 `ls` —— 历史习惯，**本仓库不定义 `ls` 本身**。
 
-### 3. 函数（公开 13 个 + 内部若个，见 architecture §4.3）
+**退出码 / 报错**：别名不给任何包装 —— 退出码和报错文字都由被展开的 `git` / `ls` 决定。
+**依赖**：只要 `PATH` 里有 `git` / `ls`，不读本仓库任何变量。
+
+### 3. 函数（公开 13 个 + 内部 13 个，见 architecture §4.3）
 
 #### `_up_to_have_dir <目录名>` —— 往上找目录
 
@@ -80,6 +107,8 @@ zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
   > 加了"最顶层那一格"一条用例；修复经过见 `BACKLOG.md`。
 - 它是 `cw` 的基础；`tools/git-repo-sh-tools` 里另有一份自己的同名副本
   （`env.zsh` / `env.bash` 各一份）。
+- **退出码**：`0` 找到（把那一层目录打印到 stdout）；`1` 没找到（**什么都不打印**）。
+  **依赖**：无 —— 只看 `$PWD`，不读任何环境变量。
 
 #### `proxy_on [IP] [端口]` / `proxy_off` —— 代理开关
 
@@ -101,6 +130,28 @@ proxy_off                   # 清掉 6 个代理变量
 - `proxy_off` 保留 `PROXY_IP`/`PROXY_PORT`，所以开关来回切不会每次都被问。
 - ⚠️ 老 `.zshrc` 里那两条 `alias proxy_on=…` / `alias proxy_off=…` 可以删了：
   本文件在定义前会 `unalias` 一次，留着也不会生效（但看着乱）。
+- **退出码**：成功两条都是 `0`；`proxy_on` 在「没值 + 不是交互终端」或「端口不是数字」时
+  返回 **2**，stderr 各有一句中文提示，例如：
+
+  ```sh
+  $ proxy_on </dev/null
+  proxy_on: 没有 PROXY_IP，且当前不是交互终端。
+     用法：proxy_on <IP> [端口]，或先 export PROXY_IP=<地址>
+  $ echo $?
+  2
+  ```
+
+- **依赖**：参数 → `$PROXY_IP` / `$PROXY_PORT`（这两个自己也会留下）；
+  `no_proxy` 的原值存在内部变量 `_PROXY_NO_PROXY_SAVED` 里，`proxy_off` 还原后清掉。
+  成功时 stdout 是这两行（`<原来的 no_proxy>` 处照抄你环境里已有的值）：
+
+  ```sh
+  $ proxy_on 10.1.2.3 8080
+  Proxy ON  http://10.1.2.3:8080  (all_proxy=socks5://10.1.2.3:8080)
+            no_proxy=<原来的 no_proxy>,127.0.0.1,::1,.local
+  $ proxy_off
+  Proxy OFF（代理变量已清除；PROXY_IP/PROXY_PORT 留着，下次 proxy_on 不用再问）
+  ```
 
 #### `cw` —— 跳到 repo 工作区根
 
@@ -111,6 +162,9 @@ cw          # cd 到最近的含 .repo 的目录（wtool 集合的根）
 - 起点是 `$WTOOL_PROJECT_ROOT`（wtool 块导出的"本项目真实路径"），**没设才退回 `$PWD`**；
 - 从起点一层层往上找 `.repo`，找到就 `cd` 过去；
 - 找不到就打 `cw: 找不到 .repo（不在 repo 工作区内？）` 到 stderr 并返回 1。
+- **退出码**：`0` 找到并 `cd`；`1` 没找到（上面那句提示走 stderr，stdout 干净）。
+- **依赖**：`$WTOOL_PROJECT_ROOT`（没设就退回 `$PWD`）；只看文件系统里有没有 `.repo`，
+  不读配置文件。
 
 #### `gba` —— 列所有分支（能上色就上色）
 
@@ -119,6 +173,17 @@ gba         # git branch -a，有 batcat 就 | batcat，否则 | cat
 ```
 
 定义前先 `unset`/`unalias` 掉同名命令，避免和别处定义的 `gba` 打架。
+
+- **退出码**：本函数不自己 `return`，拿到的是**管道末端** `cat` / `batcat` 的退出码 ——
+  所以即使 `git branch` 失败也常常是 `0`（git 自己的报错照打）。实测：
+
+  ```sh
+  $ cd /tmp && bash -c '. ~/self/wtool/shell/zsh/env.bash; gba'; echo rc=$?
+  fatal: not a git repository (or any of the parent directories): .git
+  rc=0
+  ```
+
+- **依赖**：`git`；`batcat`（可选，有就用它上色，没有退到 `cat`）。
 
 #### `pwd` / `pdd` / `pss` —— 记路径、跳回来
 
@@ -137,6 +202,14 @@ gba         # git branch -a，有 batcat 就 | batcat，否则 | cat
 > 同一用户的多个终端共用这一个文件，后敲的 `pwd` 会覆盖先敲的。
 > 这是读代码就能确定的行为。
 
+**退出码 / 依赖**（三条都**不读环境变量**，只认上面那个文件；文件不存在时不会自动创建）：
+
+| 命令 | 退出码 | 依赖 |
+|---|---|---|
+| `pwd` | `tee` 的码（正常 `0`） | `/usr/bin/pwd`、`tee`、`id`（写 `/tmp`） |
+| `pss` | `cat` 的码：文件不在 → **`1`** + `cat: … No such file or directory`（stdout 空） | `cat`、`id` |
+| `pdd` | `cd` 的码：记的目录被删了 → **`1`** + `cd: … No such file or directory` | `cat`、`tr`、`id` |
+
 #### `this_is_wsl` / `this_is_not_wsl` —— WSL 探测
 
 | 函数 | 行为 |
@@ -146,6 +219,9 @@ gba         # git branch -a，有 batcat 就 | batcat，否则 | cat
 
 > 判断依据是 `/usr/bin/wslpath` 这个路径（代码里写死的），不是 `$WSL_DISTRO_NAME` 之类。
 > 测试按**本机实际情况**断言（在 WSL 上就按 WSL 断言，不写死）。
+> **退出码**就是 0 / 1（见上表，不给别的码）；**依赖**只有 `/usr/bin/wslpath` 在不在
+> —— 本机实测 `this_is_wsl` → rc 0、`this_is_not_wsl` → rc 1（这台是 WSL，`wslpath` 是
+> `/usr/bin/wslpath -> /init`）。
 
 #### `win` —— 把当前目录翻译成"别的机器也能用"的路径（一张两列表格）
 
@@ -226,6 +302,20 @@ T=$(mktemp -d); mkdir -p "$T/src/proj/sub"; printf '[proj]\n  path = %s/src/proj
 # linux  //10.1.2.3/proj/sub
 ```
 
+**退出码**：正常一律 `0` —— **没设 `WIN_IP`、没配 samba 都不算错误**（表里写占位符或 `-`，
+stderr 一个字节都没有）；只有参数以 `-` 开头（含 `-h` / `--help`）才返回 **2**，
+用法打到 stderr：
+
+```sh
+$ win -m
+win: 没有选项：'-m'。用法：win [路径]      # stderr
+$ echo $?
+2
+```
+
+**依赖**：`$WIN_IP`（必须自己设）、`$WTOOL_SMB_CONF`（默认 `/etc/samba/smb.conf`）、
+`realpath` / `whoami` / `sed` / `awk`；`wsl` 那一行还要 `this_is_wsl` 为真且 `wslpath` 可用。
+
 #### `start <程序>` —— 在 Windows 侧打开（只 WSL 有效）
 
 用 `powershell.exe` 在**当前目录的 Windows 路径**下 `Start-Process <程序>`；
@@ -238,6 +328,10 @@ T=$(mktemp -d); mkdir -p "$T/src/proj/sub"; printf '[proj]\n  path = %s/src/proj
 start .            # 在 Windows 资源管理器里打开当前目录
 start code         # 在 Windows 侧启动 VS Code
 ```
+
+**退出码 / 依赖**：非 WSL → stdout 打 `only wsl support this`、返回 **`1`**；
+WSL 上返回 `powershell.exe` 的退出码。依赖 `/usr/bin/wslpath`（判断 + 算路径）、
+`wslpath` 命令、`powershell.exe`（都在 WSL 里现成）。
 
 **路径补全**：`start <TAB>` 补当前目录的文件/目录名（以前只能先 `ls <TAB>` 再把
 `ls` 改成 `start`）：
@@ -435,6 +529,45 @@ wrg systemimage -A3
 > 而 `rg` 那条路是**按行**拿结果的、看不到上一行，加了这条规则三条后端就对不齐了
 > （真 AOSP 实测：`wrg apk` 会命中那一行；`reportmissinglicenses` 这种真目标不受影响）。
 
+**退出码汇总**（每条报错都有一句中文，走 stderr）：
+
+| 码 | 什么时候 |
+|---|---|
+| `0` | 有命中；`-h` / `--help` / `-v` / `--version` 也是 0 |
+| `1` | 树里**没有**这三类文件（`wrg: 当前目录树下没有 …`），或**有文件但没命中**（`wrg: 没有匹配 '<模式>' 的目标名`） |
+| `2` | 用法 / 选项 / 变量值不对：未知选项、缺值、`-A/-B/-C/-m` 不是非负整数、位置参数不止一个、`-t` 类型拼错、`--color` / `WRG_COLOR` / `WRG_SEARCH` 值拼错、`WRG_SEARCH` 指定的后端不在 `PATH` 里；**一个查询串都没给**（只敲 `wrg`）也是 2 + 用法 |
+
+**依赖**：按 `WRG_SEARCH` 探测到的后端（`rg`、或 `fdfind`/`fd-find`/`fd`、或兜底的
+`find` + `awk` + `sort`）；三个环境变量 `WRG_SEARCH` / `WRG_COLOR` / `NO_COLOR`
+（默认值与优先级见下面「配置项」）。
+
+### 4. 装的是哪两份文件、被谁加载
+
+| 文件 | 给谁 | 被谁 source |
+|---|---|---|
+| `env.zsh` | zsh | `~/.zshrc` 里的 wtool 块 |
+| `env.bash` | bash | `~/.bashrc` 里的 wtool 块 |
+
+两份**内容等价**（同一批别名/函数、同样的报错、同样的退出码），区别只有语法：
+zsh 版用 `${var:h}` 取父目录，bash 版用 `${var%/*}` + `case`。
+
+> 受众里有人机器上**没有 zsh**（公司机器很常见），bash 版是必需品。
+> **改一个就要在另一个里做等价修改**，`tests/env_test.sh` 会用同一张用例表把两个 shell 都跑一遍。
+
+`wtool.xml` 里就是这么声明的（没有 `<link>`，全部靠注入 env 块提供；也**没有 `id=` 属性** ——
+项目身份就是相对工作区的路径 `shell/zsh`，写了 `id=` 反而会被引擎硬报错，见 ADR-0037）：
+
+```xml
+<wtool schema="1" priority="20">
+  <zshrc  src="env.zsh"/>
+  <bashrc src="env.bash"/>
+</wtool>
+```
+
+> 内部辅助函数（`_win_ip` / `_win_smb_shares` / `_win_rows` / `_wrg_*` 那一批，共 13 个）
+> 也定义在这两份文件里，但**不是给用户在 rc 里敲的**，所以不在上面的命令清单里；
+> 完整现状见 `architecture.md` §4.3。
+
 ---
 
 ## 安装（由 wtool 统一管）
@@ -452,7 +585,8 @@ wrg systemimage -A3
 
 ## 配置项
 
-本仓库**不读任何配置文件**，全部行为由这几个环境变量决定：
+本仓库**自己不读配置文件**（唯一读文件的是 `win`：它读 samba 的 `$WTOOL_SMB_CONF`，
+默认 `/etc/samba/smb.conf`），其余行为全部由这几个环境变量决定：
 
 | 变量 | 本仓库做什么 | 说明 |
 |---|---|---|
@@ -518,7 +652,7 @@ wrg systemimage -A3
 ## 测试
 
 ```sh
-bash tests/env_test.sh     # 本机（WSL、rg + fd 都装了）：529 通过 / 0 失败
+bash tests/env_test.sh     # 本机（WSL、rg + fd 都装了）：529 通过 / 0 失败（2026-10-09 实测）
                            # —— 条数随环境变（后端在不在、shell 在不在），以输出为准
                            # 没装 zsh 就只测 bash（会打印跳过）
 ```
@@ -581,8 +715,20 @@ auto / rg / fd 与 find 的着色输出逐字一致）、
 | `env.zsh` | zsh 版：别名 + 函数（见上） |
 | `env.bash` | bash 版：与 `env.zsh` 等价（同一张用例表跑两个 shell） |
 | `tests/env_test.sh` | 行为测试：同一张用例表跑两个 shell（条数以输出为准） |
+| `AGENTS.md` | 给助手看的：动这个仓库必须知道的规则（README 该写成什么样等） |
 | `architecture.md` | 代码现在长什么样（现状，只写现状） |
 | `BACKLOG.md` | 这个项目"接下来做什么、哪条待拍板" |
+| `docs/download.md` | **给人看的下载页**（引擎 `wtool pack-release` 生成，要进 Git，见最后一节） |
+| `scripts/release.json` | 发布时引擎写的下载清单（名字 + sha256 + 直链），`download-release` 只读它 |
 
 > 历史：这里原来只有 `env.zsh`，配置是从 `mytool` 的 `source_all_env.sh` 链上来的；
 > 现在由 wtool 的块加载，不再需要那个链条。
+
+## 下载（发布产物）
+
+发布产物 —— 这一版发了哪些文件、资产名、直链、怎么装 —— **不在 README 里重复**，都在单独一页：
+
+> **→ [下载页：docs/download.md](docs/download.md)**
+
+那一页由 `wtool pack-release` 在打包时生成并提交进 Git（机器可读的那份是
+`scripts/release.json`，`wtool download-release` 读它）。README 只留这一个链接。
