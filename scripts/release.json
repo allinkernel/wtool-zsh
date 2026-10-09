@@ -2,11 +2,11 @@
   "schema": 1,
   "project": "shell/zsh",
   "repo": "allinkernel/wtool-zsh",
-  "tag": "ds_dev-2026-10-07",
-  "base_url": "https://github.com/allinkernel/wtool-zsh/releases/download/ds_dev-2026-10-07",
-  "commit": "b668fe344d33b75b7c1c666069f526be2d27d262",
-  "packed_at": "2026-10-08T01:05:04+0800",
-  "published_at": "2026-10-08T01:06:48+08:00",
+  "tag": "ds_dev-2026-10-09",
+  "base_url": "https://github.com/allinkernel/wtool-zsh/releases/download/ds_dev-2026-10-09",
+  "commit": "14a0bf6f800aa9242922dd4a7eeb3b79f316e4d6",
+  "packed_at": "2026-10-09T15:32:02+0800",
+  "published_at": "2026-10-09T15:34:30+08:00",
   "wtool_engine": "1.0.0",
   "dirty": false,
   "volume_size": "32M",
@@ -20,33 +20,21 @@
     {
       "name": "dist.json",
       "role": "",
-      "bytes": 912,
-      "sha256": "06aa448ce1635c5c99dde245f567887377ae1d8d6148bbfbd8203b8197d207b1"
+      "bytes": 847,
+      "sha256": "19b338efa95b5668d11b2e5d0aba823133c94ae35d737cb8c531d3fda9684878"
     },
     {
-      "name": "release-hash.txt",
-      "role": "",
-      "bytes": 78,
-      "sha256": "ef6192956c75287ea4018889b04239f0e0e122b5b546b5bdc1c18f8c37dbaa9f"
-    },
-    {
-      "name": "release.zip",
-      "role": "release",
-      "bytes": 33240,
-      "sha256": "dae962abf477c57190962e0445d17e65bf2e0076300cb899791bfe32ebbe48c8"
-    },
-    {
-      "name": "源码-hash.txt",
+      "name": "source-hash.txt",
       "role": "",
       "bytes": 77,
-      "sha256": "151a155fdcaef43c9e72c49e228aacfc80b4a89cac13e6f63b0b142a64f371e2"
+      "sha256": "ab4f46918cba4236a3a9da33ff4283d56898b74da6e12fef1acd3565ceaf3fce"
     },
     {
-      "name": "源码.zip",
+      "name": "source.zip",
       "role": "source",
-      "bytes": 106811,
-      "sha256": "7932c1d884e79a6646f1646a2863e4200eb035e605a14534a7b068ddd18bc820"
+      "bytes": 120916,
+      "sha256": "1d7127b5ec43a573ad7526efd73808cd365a26f34d6cc21bd0ecbe43f840d97a"
     }
   ],
-  "how": "wtool download-release shell/zsh   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release shell/zsh     # 拼分卷 + 解到 __output/\nwtool install shell/zsh            # 装到本机"
+  "how": "wtool download-release shell/zsh   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release shell/zsh     # 拼分卷 + 把源码铺回项目目录\nwtool install shell/zsh            # 装到本机"
 }
