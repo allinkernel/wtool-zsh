@@ -679,3 +679,47 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
 - **判据**：`/tmp/win-demo.txt`（WSL 上 `win .` = 5 行、`win -s .` = 4 行）；`tests/env_test.sh` 531 通过 / 0 失败。
 - **过程教训**：第一版用"按行插入 `-q`"改 `_win_server`，把 `win()` 弄坏了（`command not found: win`）——
   已 `git checkout --` 回滚重做，改成**只动 `win()`、不碰 `_win_server`** 的最小改法。
+- **⚠️ 订正（2026-10-09）**：这一轮加的 `-s|--server` / `-w|--wsl` **多余，已删除**
+  （那两条是我自己加的，用户从没要过），判据里"`win -s .` = 4 行"也随之作废 ——
+  见文件末尾 2026-10-09 那条。这里保留原文，方便和提交历史对账。
+
+## ✅ 2026-10-09：`win` 删掉所有选项、改成两列表格（用户第三轮反馈）
+
+- **需求**（用户原话）："win 不需要选项，这些奇奇怪的选项你真的试过吗？有了 smb.conf 说明支持
+  samba，没有自然不支持，**也不用专门打印出来错误信息**。这样吧，搞个表格，表格的第一列是
+  mac/win/scp/wsl/linux，第二列是对应的可用路径，如果没有配置 WIN_IP，就直接写请设置 WIN_IP"。
+  触发点是他给了 `win -s` / `win -m` 的截图：`-m` 被当路径漏给 `wslpath`，屏幕上打出 `wslpath` 的 `Usage:`。
+- **改法**（`env.zsh` + `env.bash` 同改）：
+  - `-s` / `--server` / `-w` / `--wsl` **全删**（`win` 只接受可选路径参数：不写 = 当前目录，
+    `win <路径>` = 给定路径）。`-` 开头的一律不当路径：`-` / `-h` / `--help` 打
+    `用法：win [路径]（没有选项）`、别的 `-*` 打 `win: 没有选项：'<参数>'。用法：win [路径]`，
+    两种都 **rc=2、stdout 为空**，**绝不流到 `wslpath`**；
+  - 输出改成表头 + 五行（`mac` / `win` / `scp` / `wsl` / `linux` × 可用路径），
+    `printf '%-5s  %s\n'` 定宽对齐、无颜色、无附加说明；表头刻意用 ASCII（`%-5s` 在 zsh 里按
+    显示宽度补、bash 里按字节补，中文表头会让两个 shell 的字节不一样）；
+  - 没 `WIN_IP`：靠 IP 的四行第二列写 `请设置 WIN_IP`，**stderr 一个字节都不打**、rc=0；
+    `wsl` 行不靠 IP，WSL 上照给、别处给 `-`；
+  - 没配 samba（`WTOOL_SMB_CONF` 读不到 / 没有 share 匹配）：`mac`/`win`/`linux` 三行给 `-`，
+    **同样不报错**；`scp` 行照给。挑 share 的逻辑没动（最长前缀 + 路径分隔符对齐），
+    只是从 `_win_server` 搬进 `_win_rows`（顺带改名：它现在出的是五行第二列，不是"服务器那几行"）；
+  - `start` 原来的 `$(win)` 不能再用了（`win` 现在打整张表），改成自己
+    `wslpath -w "$PWD"`（算不出来退回 `$PWD`）。
+- **订正**：**上一轮（2026-10-07 第二轮）加的 `-s|--server` / `-w|--wsl` 是多余的，已删除。**
+  那两条是我为了"在 WSL 上也能看服务器那几行 / 只给 wslpath"自己加的，用户从没要过；
+  `win` 不带选项本来就该给全，加了选项反而把 `-m` 这种敲错的参数漏给了 `wslpath`。
+  同一条也解释了 2026-10-07 那条里"`win -s .` = 4 行"的判据为什么现在不成立。
+- **测试**：`tests/env_test.sh` 的 win 段**整段重写**（原来是"断言四行 / `-s`"那套），
+  两个 shell 各 15 条：①五行齐全（`mac`=`smb://`、`win`=UNC、`linux`=`//`、`scp`=`user@ip:绝对路径`）
+  ②非 WSL 时 `wsl` 行是 `-` ③没 `WIN_IP` → 四行 `请设置 WIN_IP` + **stderr 为空** + rc=0
+  ④读不到 `smb.conf` / 没有 share 匹配 → 三行 `-` + **stderr 为空** ⑤最长前缀 + 路径分隔符对齐
+  ⑥`win <路径>` 对给定路径生效 ⑦`win -m` **不碰 `wslpath`**（假 `wslpath` 没被调用 +
+  stdout 里 `grep -ci 'usage|wslpath'` = 0）⑧`win -h` / `--server` 只打用法、rc=2、stdout 空。
+  夹具挪到 `$T/winws`（**故意不用 `/tmp` 当 share 的 `path`**：macOS / Windows 上 `/tmp` 是软链，
+  `realpath -m` 会把它折成 `/private/tmp`，share 就匹配不上），假 `wslpath` 顺手把调用参数记进文件。
+  用例：**529 通过 / 0 失败**（合并前 531：删掉 4 条旧 win 用例、win 段新增的比删掉的多）。
+- **判据（可原地重跑）**：`bash tests/env_test.sh` → 末行 `529 通过, 0 失败`；
+  两个 shell 的用例表除了"start 的补全注册"那 3 条之外**逐字相同**（把两段 `ok` 行 `diff` 一下即可）。
+- **显示效果**：`/tmp/win-demo.txt`（真 bash + 真 zsh、假 `WIN_IP` / 假 `WTOOL_SMB_CONF` / 假 `wslpath`，
+  文件头写了时间、命令、参数与夹具说明），覆盖情形 ①②③④。
+- **没验到的**：真机 samba（没装 samba 的机器上跑的，全部用假 `smb.conf` 注入）；
+  WSL 上 `wslpath` 的真输出按本机实际情况断言（本机就是 WSL，跑出来的那行是真实的）。

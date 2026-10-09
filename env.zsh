@@ -96,21 +96,33 @@ this_is_not_wsl ()
 }
 
 # ---------------------------------------------------------------------------
-# win：把当前目录翻译成"别的机器也能用"的路径
-#   WSL（有 wslpath）：Windows 路径，就是 `wslpath -w .`
-#   非 WSL（普通服务器）：两行 —— samba 路径 + scp 路径
-#     //<ip>/<share><相对路径>   share 取 /etc/samba/smb.conf 里最长前缀匹配的那个
-#     <user>@<ip>:<绝对路径>     可以直接 `scp <文件> $(win 里第二行)/`
-#   ip：优先 $WIN_IP，否则从 `ip -4 addr` 里取第一个非 lo 的地址
-#   smb.conf 的路径可以用 $WTOOL_SMB_CONF 覆盖（默认 /etc/samba/smb.conf）
+# win：把当前目录（或给定路径）翻译成"别的机器也能用"的路径，打一张两列表格
+#
+#   win              用当前目录
+#   win <路径>       用给定路径（相对路径按当前目录算）
+#
+#   **没有选项**（2026-10-09 用户要求删掉 -s/--server/-w/--wsl）：
+#   以 '-' 开头的参数一律不当路径，只打一行用法到 stderr 并返回 2 ——
+#   绝不把它漏给 wslpath（`win -m` 打出 wslpath usage 就是这么来的）。
+#
+#   第一列固定五个使用方，第二列是它对那个使用方可用的路径：
+#     mac    smb://<ip>/<share><相对路径>        macOS Finder
+#     win    \\<ip>\<share><相对路径>            UNC：资源管理器 / CMD / PowerShell
+#     scp    <user>@<ip>:<绝对路径>             scp / rsync
+#     wsl    wslpath -w <路径> 的结果           只有 WSL 上有意义；别处给 '-'
+#     linux  //<ip>/<share><相对路径>           mount -t cifs / smbclient
+#
+#   没设 $WIN_IP  → 靠 IP 的那四行第二列写「请设置 WIN_IP」，**不报错**；
+#   没配 samba（读不到 $WTOOL_SMB_CONF / 没有 share 匹配）→ mac/win/linux 三行给 '-'，
+#   **同样不报错**（用户 2026-10-09："没有自然不支持，也不用专门打印出来错误信息"）。
+#   scp 行不依赖 samba，只要有 $WIN_IP 就给。
+#   smb.conf 的路径：$WTOOL_SMB_CONF，默认 /etc/samba/smb.conf
 # ---------------------------------------------------------------------------
 
-# 本机地址：优先 $WIN_IP；取不到就返回 1，由调用方报清楚
+# 本机地址：只认 $WIN_IP（**不做 ip addr 探测** —— 阿里云那类机器探到的是内网/VPC
+# 地址，猜错了比不猜更坏，2026-10-07 用户要求）。没设 → 返回 1。
 _win_ip ()
 {
-    # 只认 $WIN_IP：**不做 ip addr 探测**。
-    # 阿里云那类机器探出来的是内网 / VPC 地址，不是能对外用的地址；
-    # 猜错了比不猜更坏（用户 2026-10-07 要求）。
     [ -n "${WIN_IP:-}" ] || return 1
     printf '%s\n' "${WIN_IP}"
 }
@@ -136,22 +148,26 @@ _win_smb_shares ()
     ' "$1"
 }
 
-# 非 WSL 分支：samba 路径 + scp 路径。算不出来就在 stderr 说清楚，绝不静默返回空。
-_win_server ()
+# 五行的第二列（<=> 是占位符，换成「请设置 WIN_IP」或 '-'）。顺序固定：mac/win/scp/wsl/linux。
+# $1 = 目标绝对路径，$2 = wsl 行已经算好的值
+_win_rows ()
 {
-    local target ip conf shares line name spath sraw rel best best_rel best_len rc
-    target=$(realpath -m -- "${1:-$PWD}" 2>/dev/null)
-    [[ -n "${target}" ]] || target="${1:-$PWD}"
-
-    ip=$(_win_ip)
+    local target=$1 wslval=$2 ip conf shares line name spath sraw rel best best_rel best_len
+    local mac_col win_col scp_col wsl_col linux_col
+    ip="${WIN_IP:-}"
     if [[ -z "${ip}" ]]; then
-        echo "win: 没设 WIN_IP（本命令不自动探测 IP —— 服务器上探到的常常是内网地址）。" >&2
-        echo "     请在 .bashrc/.zshrc 里设 WIN_IP=<本机对外的地址>" >&2
-        return 1
+        mac_col='请设置 WIN_IP'; win_col='请设置 WIN_IP'; scp_col='请设置 WIN_IP'
+        wsl_col='-'; linux_col='请设置 WIN_IP'
+        [ "${wslval}" = '-' ] || wsl_col="${wslval}"
+        printf 'mac|%s\nwin|%s\nscp|%s\nwsl|%s\nlinux|%s\n' \
+            "${mac_col}" "${win_col}" "${scp_col}" "${wsl_col}" "${linux_col}"
+        return 0
     fi
-
+    mac_col='-'; win_col='-'; wsl_col='-'; linux_col='-'
+    scp_col="$(whoami)@${ip}:${target}"
+    [ "${wslval}" = '-' ] || wsl_col="${wslval}"
     conf="${WTOOL_SMB_CONF:-/etc/samba/smb.conf}"
-    best=""; best_rel=""; best_len=0; rc=0
+    best=""; best_rel=""; best_len=0
     if [[ -r "${conf}" ]]; then
         shares=$(_win_smb_shares "${conf}")
         while IFS= read -r line; do
@@ -175,56 +191,53 @@ _win_server ()
         done <<EOF
 ${shares}
 EOF
-        if [[ -n "${best}" ]]; then
-            # 三种写法都给：
-            #   \\ip\share\rel   → Windows 资源管理器地址栏 / CMD / PowerShell（UNC）
-            #   //ip/share/rel   → Linux：mount -t cifs //srv/share 、smbclient //srv/share
-            #   smb://ip/share/rel → 浏览器 / macOS Finder / GNOME Files
-            _unc=$(printf '%s' "${best_rel}" | sed 's|/|\\|g')
-            printf '%s\n' "\\\\${ip}\\${best}${_unc}"
-            echo "//${ip}/${best}${best_rel}"
-            echo "smb://${ip}/${best}${best_rel}"
-        else
-            echo "win: ${conf} 里没有 share 的 path 匹配 ${target}" >&2
-            rc=1
-        fi
-    else
-        echo "win: 读不到 samba 配置 ${conf}" >&2
-        rc=1
     fi
-    echo "$(whoami)@${ip}:${target}"
-    return ${rc}
+    if [[ -n "${best}" ]]; then
+        # UNC 那格要把 '/' 换成 '\'（printf 而不是 echo：反斜杠在各 shell 的 echo 里行为不一）
+        _unc=$(printf '%s' "${best_rel}" | sed 's|/|\\|g')
+        mac_col="smb://${ip}/${best}${best_rel}"
+        win_col=$(printf '%s' "\\\\${ip}\\${best}${_unc}")
+        linux_col="//${ip}/${best}${best_rel}"
+    fi
+    printf 'mac|%s\nwin|%s\nscp|%s\nwsl|%s\nlinux|%s\n' \
+        "${mac_col}" "${win_col}" "${scp_col}" "${wsl_col}" "${linux_col}"
+    return 0
 }
 
 win ()
 {
-    # 用法：win [路径]              —— 该给的都给：WSL 上给 wslpath 那行，**同时**给 UNC / // / smb:// / scp
-    #       win -s|--server [路径] —— 只给服务器那几行（不跑 wslpath）
-    #       win -w|--wsl [路径]    —— 只给 wslpath（老行为）
+    # 没有选项：'-' 开头的一律不当路径（漏给 wslpath 就会打出它的 usage）
     case ${1:-} in
-    -s | --server)
-        shift
-        _win_server "$@"
-        return $?
+    '-')
+        echo "用法：win [路径]（没有选项）" >&2
+        return 2
         ;;
-    -w | --wsl)
-        shift
-        wslpath -w "${1:-.}"
-        return $?
+    --help | -h)
+        echo "用法：win [路径]（没有选项）" >&2
+        return 2
+        ;;
+    -*)
+        echo "win: 没有选项：'$1'。用法：win [路径]" >&2
+        return 2
         ;;
     esac
-    if this_is_wsl; then
-        wslpath -w "${1:-.}"
-        # 用户要求（2026-10-07）：除 wslpath 外，那几种写法**也必须总是显示**。
-        # 缺 WIN_IP / 读不到 smb.conf 时那几行给不出来 —— 静默跳过（wslpath 那行照样有效）。
-        if [ -n "${WIN_IP:-}" ]; then
-            _win_server "$@" 2>/dev/null || true
-        fi
-        return 0
+    local target wslval='-'
+    target=$(realpath -m -- "${1:-$PWD}" 2>/dev/null)
+    [[ -n "${target}" ]] || target="${1:-$PWD}"
+    # wsl 行：只有 WSL 上有意义（wslpath 不在就保持 '-'，不报错）
+    if this_is_wsl && [ -e /usr/bin/wslpath ]; then
+        wslval=$(wslpath -w "${1:-.}" 2>/dev/null)
+        [[ -n "${wslval}" ]] || wslval='-'
     fi
-    _win_server "$@"
+    # 表头 + 五行；第一列宽按最长的 'linux'(5) 算，printf 定宽对齐，全表不上色。
+    # 表头用 ASCII：zsh 的 %-5s 按**显示宽度**补（中文算 2 列）、bash 按字节补，
+    # 用中文表头两个 shell 的字节就不一样了（"逐字等价"的断言会挂）。
+    printf '%-5s  %s\n' usage path
+    _win_rows "${target}" "${wslval}" | while IFS='|' read -r _k _v; do
+        printf '%-5s  %s\n' "${_k}" "${_v}"
+    done
+    return 0
 }
-
 # ── 代理开关：proxy_on / proxy_off ───────────────────────────────────
 # 原来这两条是 .zshrc 里写死 127.0.0.1:7897 的别名；现在搬到这里，取值顺序：
 #   ① 参数：proxy_on <IP> [端口]
@@ -311,7 +324,11 @@ proxy_off ()
 start ()
 {
     this_is_not_wsl && echo "only wsl support this" && return 1
-    powershell.exe -Command "Set-Location -Path \"$(win)\"; Start-Process $1"
+    # 自己算 Windows 路径：`win` 现在打的是整张表，不能再当"一行路径"用
+    local win_cwd
+    win_cwd=$(wslpath -w "$PWD" 2>/dev/null)
+    [ -n "${win_cwd}" ] || win_cwd="$PWD"
+    powershell.exe -Command "Set-Location -Path \"${win_cwd}\"; Start-Process $1"
 }
 
 # ---------------------------------------------------------------------------

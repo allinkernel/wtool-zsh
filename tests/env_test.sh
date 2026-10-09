@@ -247,27 +247,6 @@ if [ -n "$real_rg" ]; then
     chmod +x "$T/bin-rg/rg"
 fi
 
-# win 服务器分支的夹具：假 smb.conf（只通过 WTOOL_SMB_CONF 注入，绝不碰真 /etc/samba）
-smb="$T/smb.conf"
-cat > "$smb" <<EOF
-[global]
-   workgroup = WG
-
-[proj]
-   path = $T/ws/a
-
-[ws]
-   path = $T/ws
-
-[elsewhere]
-   path = /nowhere
-EOF
-smb_nomatch="$T/smb-nomatch.conf"
-cat > "$smb_nomatch" <<EOF
-[other]
-   path = /nowhere
-EOF
-
 sh_eval () {   # <shell> <片段>：source 对应 env 后在假工作区里跑
     local sh=$1 snippet=$2
     # 夹具自带干净环境：调用者可能是个 wtool 管着的 shell（块里导出了
@@ -277,6 +256,61 @@ sh_eval () {   # <shell> <片段>：source 对应 env 后在假工作区里跑
     ( cd "$T/ws/a/b" && env -u WTOOL_PROJECT_ROOT -u WTOOL_PROJECT_ID \
         WTOOL_PROJECT_DIR="$proj" "$sh" -c \
         "set -u; source \"$proj/env.$sh\"; $snippet" ) 2>&1
+}
+
+# ---- win 的用例辅助 -------------------------------------------------------
+# 用 $T/winws（**故意不在 /tmp 下**）当假工作区：macOS/Windows 上 /tmp 是软链，
+# realpath -m 会把 /tmp/... 折成 /private/tmp/...，share 的 path 就匹配不上了。
+mkdir -p "$T/winws/ws/a/b" "$T/winws/ws/ab" "$T/winws/bin"
+smb2="$T/winws/smb.conf"
+cat > "$smb2" <<EOF
+[global]
+   workgroup = WG
+
+[proj]
+   path = $T/winws/ws/a
+
+[ws]
+   path = $T/winws/ws
+
+[other]
+   path = /nowhere
+EOF
+smb2_nomatch="$T/winws/smb-nomatch.conf"
+cat > "$smb2_nomatch" <<EOF
+[other]
+   path = /nowhere
+EOF
+
+# winrows <shell> <片段>：跑 win 拿**整张表**。两个 shell 的 env 都给全，别让
+# 调用者环境里的 WIN_IP / WTOOL_SMB_CONF 漏进来。用 printf %q 把片段当数据传，
+# 免得片段里的空格被 word split。
+winrows () {
+    local sh=$1 snippet=$2
+    ( cd "$T/winws/ws/a/b" && env -u WTOOL_PROJECT_ROOT -u WTOOL_PROJECT_ID \
+        -u WIN_IP -u WTOOL_SMB_CONF -u WTOOL_PROJECT_DIR \
+        WTOOL_PROJECT_DIR="$proj" "$sh" -c \
+        "source $(printf '%q' "$proj/env.$sh"); $snippet" ) 2>/dev/null
+}
+# winstderr <shell> <片段>：只把 **stderr** 打出来（成功能算出来的表不算）。
+winstderr () {
+    local sh=$1 snippet=$2
+    ( cd "$T/winws/ws/a/b" && env -u WTOOL_PROJECT_ROOT -u WTOOL_PROJECT_ID \
+        -u WIN_IP -u WTOOL_SMB_CONF -u WTOOL_PROJECT_DIR \
+        WTOOL_PROJECT_DIR="$proj" "$sh" -c \
+        "source $(printf '%q' "$proj/env.$sh"); $snippet" ) 2>&1 >/dev/null
+}
+# 非 WSL 那条分支的替身（测试机常常是 WSL，不压下去测不到服务器那条路）
+win_srv='this_is_wsl () { return 1; }'
+# 表头 + 五行（顺序固定：mac/win/scp/wsl/linux）；每个格子按 win 的定宽格式摆，
+# 期望值就和 win 的输出逐字对得上
+wtbl () {
+    printf 'usage  path\n'
+    printf '%-5s  %s\n' mac "$1"
+    printf '%-5s  %s\n' win "$2"
+    printf '%-5s  %s\n' scp "$3"
+    printf '%-5s  %s\n' wsl "$4"
+    printf '%-5s  %s\n' linux "$5"
 }
 
 for sh in bash zsh; do
@@ -317,19 +351,22 @@ for sh in bash zsh; do
     chk "$sh：pdd 能跳回 pss 记下的目录" \
         "$(sh_eval "$sh" 'pwd >/dev/null; cd /; pdd >/dev/null; printf "%s\n" "$PWD"')" "$T/ws/a/b"
 
-    # WSL 探测：按本机实际情况断言（这台机器就是 WSL，别写死）
+    # WSL 探测：按本机实际情况断言（这台机器就是 WSL，别写死）。
+    # win 现在**在哪儿都打整张表**，这里只钉 wsl 那一行；五行齐全的断言在下面
+    # （用替身把两条分支都压出来，两个 shell 同一张表）。
     if [ -e /usr/bin/wslpath ]; then
         chk "$sh：this_is_wsl 在 WSL 上返回 0" \
             "$(sh_eval "$sh" 'this_is_wsl; echo rc=$?')" "rc=0"
-        chk "$sh：win 在 WSL 上给出 Windows 路径" \
-            "$(sh_eval "$sh" 'win >/dev/null 2>&1; echo rc=$?')" "rc=0"
-        chk "$sh：win 在 WSL 上就是 wslpath -w .（逐字一致）" \
-            "$(sh_eval "$sh" 'win')" "$(wslpath -w "$T/ws/a/b")"
+        got=$(sh_eval "$sh" 'win 2>/dev/null | sed -n 5p')
+        want="wsl    $(wslpath -w "$T/ws/a/b" 2>/dev/null)"
+        [ -n "$got" ] || got='(空)'
+        chk "$sh：win 在 WSL 上第 5 行（wsl）就是 wslpath -w 的结果" "$got" "$want"
     else
         chk "$sh：this_is_wsl 在非 WSL 上返回 1" \
             "$(sh_eval "$sh" 'this_is_wsl; echo rc=$?')" "rc=1"
-        chk "$sh：win 在非 WSL 上返回 1" \
-            "$(sh_eval "$sh" 'win >/dev/null 2>&1; echo rc=$?')" "rc=1"
+        chk "$sh：win 在非 WSL 上照样打整张表（rc=0）" \
+            "$(sh_eval "$sh" "$win_srv
+                win >/dev/null 2>&1; echo rc=\$?")" "rc=0"
     fi
     chk "$sh：this_is_not_wsl 与 this_is_wsl 相反" \
         "$(sh_eval "$sh" 'this_is_wsl && this_is_not_wsl; echo rc=$?')" "rc=1"
@@ -354,78 +391,85 @@ for sh in bash zsh; do
             esac ;;
     esac
 
-    # ---- win 的服务器分支（非 WSL）：WSL 机上用函数替身压低 this_is_wsl，两边跑同一张表 ----
-    win_srv='this_is_wsl () { return 1; }'
-    target=$(cd "$T/ws/a/b" && /usr/bin/pwd -P)
-    want="\\\\10.1.2.3\\proj\\b
-//10.1.2.3/proj/b
-smb://10.1.2.3/proj/b
-$(whoami)@10.1.2.3:$target"
-    chk "$sh：win（非 WSL）给出 UNC + // + smb:// + scp 四行" \
-        "$(sh_eval "$sh" "$win_srv
-            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win")" "$want"
-    chk "$sh：win（非 WSL）按最长前缀挑 share，且按路径分隔符对齐" \
-        "$(sh_eval "$sh" "$win_srv
-            cd '$T/ws/ab'
-            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win 2>/dev/null | head -1")" '\\10.1.2.3\ws\ab'
-
-    rc=0
-    out=$(sh_eval "$sh" "$win_srv
-        WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb_nomatch' win") || rc=$?
-    chk "$sh：win（非 WSL）没有匹配的 share：退出码 1" "$rc" "1"
+    # ---- win：一张两列表格（无选项），五行 mac/win/scp/wsl/linux ----
+    # 夹具在 $T/winws（见文件上方）：假 smb.conf + 假 wslpath，**不碰真 /etc/samba**。
+    bin_win="$T/winws/bin/wslpath"          # 假 wslpath：把调用参数记下来（改不出来 = 没被调用）
+    target2=$T/winws/ws/a/b
+    target2abs=$T/winws/ws/ab
+    scp2="$(whoami)@10.1.2.3:"
+    chk "$sh：win（WSL）①五行齐全：mac=smb:// win=UNC linux=// scp=user@ip:path" \
+        "$(winrows "$sh" "this_is_wsl () { return 0; }
+            wslpath () { printf '%s\n' \"\$@\" >> '$bin_win'; printf 'C:\\\\fake\\\\winws'; }
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb2' win")" \
+        "$(wtbl "smb://10.1.2.3/proj/b" \
+                "\\\\10.1.2.3\\proj\\b" \
+                "${scp2}${target2}" \
+                'C:\fake\winws' \
+                "//10.1.2.3/proj/b")"
+    chk "$sh：win（非 WSL）②wsl 行给 -（rest 一样齐）" \
+        "$(winrows "$sh" "$win_srv
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb2' win")" \
+        "$(wtbl "smb://10.1.2.3/proj/b" \
+                "\\\\10.1.2.3\\proj\\b" \
+                "${scp2}${target2}" \
+                "-" \
+                "//10.1.2.3/proj/b")"
+    # 最长前缀 + 路径分隔符对齐：$T/winws/ws/ab 命中 [ws]，不被 [proj] 那样的前缀吃掉
+    chk "$sh：win 按最长前缀挑 share（路径边界对齐）" \
+        "$(winrows "$sh" "$win_srv
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb2' win '$target2abs' | sed -n 3p")" \
+        "win    \\\\10.1.2.3\\ws\\ab"
+    chk "$sh：win <路径> 对给定路径生效（不是永远 cwd）" \
+        "$(winrows "$sh" "$win_srv
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb2' win '$target2abs'")" \
+        "$(winrows "$sh" "$win_srv
+            cd '$T/winws'
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb2' win ws/ab")"
+    # 没 WIN_IP：靠 IP 的四行写「请设置 WIN_IP」，wsl 行不受影响（它不靠 IP）
+    chk "$sh：win（非 WSL）没 WIN_IP 时退出码是 0（打表不是报错）" \
+        "$(winrows "$sh" "$win_srv
+            WTOOL_SMB_CONF='$smb2' win >/dev/null; printf 'rc=%s' \"\$?\"")" "rc=0"
+    chk "$sh：win（非 WSL）没 WIN_IP → 四行写 请设置 WIN_IP、wsl 行是 -" \
+        "$(winrows "$sh" "$win_srv
+            WTOOL_SMB_CONF='$smb2' win")" \
+        "$(wtbl '请设置 WIN_IP' '请设置 WIN_IP' '请设置 WIN_IP' '-' '请设置 WIN_IP')"
+    chk "$sh：win 没 WIN_IP 时**没有报错**（stderr 空）" \
+        "$(winstderr "$sh" "$win_srv
+            WTOOL_SMB_CONF='$smb2' win")" ""
+    chk "$sh：win（WSL）没 WIN_IP 时 wsl 行照给（它不依赖 WIN_IP）" \
+        "$(winrows "$sh" "this_is_wsl () { return 0; }
+            wslpath () { printf 'C:\\\\fake'; }
+            WTOOL_SMB_CONF='$smb2' win | sed -n 5p")" "wsl    C:\\fake"
+    chk "$sh：win 有 WIN_IP、读不到 smb.conf → mac/win/linux 是 -、scp 正常" \
+        "$(winrows "$sh" "$win_srv
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$T/winws/no-such.conf' win")" \
+        "$(wtbl '-' '-' "${scp2}${target2}" '-' '-')"
+    chk "$sh：win 读不到 smb.conf 时**没有报错**（stderr 空）" \
+        "$(winstderr "$sh" "$win_srv
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$T/winws/no-such.conf' win")" ""
+    chk "$sh：win 有 WIN_IP、没有 share 匹配 → mac/win/linux 是 -（静默）" \
+        "$(winrows "$sh" "$win_srv
+            WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb2_nomatch' win")" \
+        "$(wtbl '-' '-' "${scp2}${target2}" '-' '-')"
+    # 没有选项：'-' 开头的一律不当路径，绝不漏给 wslpath（漏了它就会打 Usage: + wslpath 用法）
+    rm -f "$bin_win"
+    chk "$sh：win -m：不当路径、不碰 wslpath（假 wslpath 没被调用）" \
+        "$(winrows "$sh" "this_is_wsl () { return 0; }
+            wslpath () { printf '%s\n' \"\$@\" >> '$bin_win'; printf 'C:\\\\fake'; }
+            win -m; printf '|rc=%s' \"\$?\"")" "|rc=2"
+    chk "$sh：win -m 的 stdout 里没有 wslpath 的 usage/用法字样" \
+        "$(winrows "$sh" "this_is_wsl () { return 0; }
+            wslpath () { printf 'Usage:\n    -m\nExample: wslpath x\n'; }
+            win -m" | grep -Eic 'usage|wslpath' || true)" "0"
+    chk "$sh：win --server：也没有这个选项了（同样不当路径）" \
+        "$(winrows "$sh" 'win --server; printf "|rc=$?"')" "|rc=2"
+    out=$(winstderr "$sh" 'win -m')
     case $out in
-        *"没有 share 的 path 匹配"*) ok "$sh：win 报清楚是 smb.conf 不匹配" ;;
-        *) bad "$sh：win 报错不清楚 [$out]" ;;
+        *"-m"*) ok "$sh：win -m 的提示点名了 '-m'（stderr）" ;;
+        *) bad "$sh：win -m 的报错没点名参数 [$out]" ;;
     esac
-    case $out in
-        *"@10.1.2.3:$target"*) ok "$sh：win 仍然给出 scp 那一行" ;;
-        *) bad "$sh：win 把 scp 那一行也吞了 [$out]" ;;
-    esac
-
-    rc=0
-    out=$(sh_eval "$sh" "$win_srv
-        WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$T/no-such-smb.conf' win") || rc=$?
-    chk "$sh：win（非 WSL）读不到 smb.conf：退出码 1" "$rc" "1"
-    case $out in
-        *"读不到 samba 配置"*) ok "$sh：win 说清了读不到哪个文件" ;;
-        *) bad "$sh：读不到 smb.conf 的报错不清楚 [$out]" ;;
-    esac
-
-    rc=0
-    out=$(sh_eval "$sh" "$win_srv
-        unset WIN_IP
-        _win_ip () { return 1; }
-        win") || rc=$?
-    chk "$sh：win（非 WSL）取不到 IP：退出码 1" "$rc" "1"
-    case $out in
-        *WIN_IP*) ok "$sh：提示去 rc 文件里设 WIN_IP" ;;
-        *) bad "$sh：取不到 IP 的报错没提 WIN_IP [$out]" ;;
-    esac
-
-    # _win_ip 只认 WIN_IP（不再探测 ip addr）
-    chk "$sh：_win_ip 没设 WIN_IP → rc=1（不探测）" \
-        "$(sh_eval "$sh" 'unset WIN_IP; _win_ip; echo rc=$?')" "rc=1"
-    chk "$sh：_win_ip 设了 WIN_IP → 原样打印" \
-        "$(sh_eval "$sh" 'WIN_IP=203.0.113.7; _win_ip')" "203.0.113.7"
-    chk "$sh：win（非 WSL）没设 WIN_IP → rc=1，stdout 一行都不打" \
-        "$(sh_eval "$sh" "$win_srv
-            unset WIN_IP
-            WTOOL_SMB_CONF='$smb' win 2>/dev/null")" ""
-    chk "$sh：win（非 WSL）设了 WIN_IP → 两行都出来了" \
-        "$(sh_eval "$sh" "$win_srv
-            WIN_IP=203.0.113.7
-            WTOOL_SMB_CONF='$smb' win 2>/dev/null | tail -1")" \
-        "$(whoami)@203.0.113.7:$target"
-
-    # ---- win -s / --server：强制服务器分支（在 WSL 上也走那条）----
-    chk "$sh：win -s 在 WSL 上也能拿到 UNC 那行" \
-        "$(sh_eval "$sh" "cd '$T/ws/ab'; WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win -s 2>/dev/null | head -1")" \
-        '\\10.1.2.3\ws\ab'
-    chk "$sh：win --server 与 -s 等价（四行全给）" \
-        "$(sh_eval "$sh" "cd '$T/ws/ab'; WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win --server 2>/dev/null | wc -l")" "4"
-    chk "$sh：win（WSL 分支）现在认路径参数" \
-        "$(sh_eval "$sh" "cd '$T/ws/a/b'; win '$T/ws/ab' 2>/dev/null")" \
-        "$(wslpath -w "$T/ws/ab" 2>/dev/null || echo SKIP)"
+    chk "$sh：没有选项（用法里写明）" \
+        "$(winstderr "$sh" 'win -h')" "用法：win [路径]（没有选项）"
 
     # ---- wrg：Android.mk / Android.bp 里的目标名 ----
     chk "$sh：wrg 精确匹配 Android.mk 的 LOCAL_MODULE" \

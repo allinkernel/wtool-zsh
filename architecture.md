@@ -67,8 +67,8 @@
 | `pdd` | `cd` 回上面那个文件记的目录（`tr -d ' '`） | 同 `cd` |
 | `this_is_wsl` | `[[ -e /usr/bin/wslpath ]]` | 0/1 |
 | `this_is_not_wsl` | 与 `this_is_wsl` 相反 | 0/1 |
-| `win` | WSL：`wslpath -w .`；非 WSL：走 `_win_server`（见 4.4） | 0 / 1 |
-| `start <程序>` | 非 WSL 打 `only wsl support this` 返回 1；WSL 上 `powershell.exe -Command "Set-Location -Path \"$(win)\"; Start-Process $1"` | 0 / 1 |
+| `win [路径]` | 打一张两列表格（`mac` / `win` / `scp` / `wsl` / `linux` × 可用路径）；**没有选项**（见 4.4） | 0 / 2（`-` 开头的参数） |
+| `start <程序>` | 非 WSL 打 `only wsl support this` 返回 1；WSL 上自己算 `wslpath -w "$PWD"`（失败退回 `$PWD`），再 `powershell.exe -Command "Set-Location -Path \"<那个路径>\"; Start-Process $1"` | 0 / 1 |
 | `proxy_on [IP] [端口]` | 开代理：取值顺序 **参数 → `$PROXY_IP`/`$PROXY_PORT` → 交互式询问**（非交互终端且没值 → rc=2、不挂住）；导出 `http_proxy`/`https_proxy`/`all_proxy` 及其大写共 6 个；`no_proxy` 采取"存原值再追加"（见 4.6） | 0 / 2 |
 | `proxy_off` | 关代理：unset 那 6 个；把 `no_proxy`/`NO_PROXY` **还原**成 `proxy_on` 之前的值；保留 `PROXY_IP`/`PROXY_PORT`（同 shell 再开不用重问） | 0 |
 | `wrg [选项] <名字>` | 见 4.5（选项位置自由；`-i` / `-e` / `-t` / `-A` / `-B` / `-C` / `-l` / `-c` / `-m` / `--color`） | 0 / 1 / 2 |
@@ -109,35 +109,55 @@ for sh in bash zsh; do
 done
 ```
 
-内部辅助（不打算给人直接敲）：`_win_ip`、`_win_smb_shares`、`_win_server`、
+内部辅助（不打算给人直接敲）：`_win_ip`、`_win_smb_shares`、`_win_rows`、
 `_wrg_usage`、`_wrg_version`、`_wrg_backend`、`_wrg_color`、`_wrg_re_escape`、`_wrg_re_us`、
 `_wrg_norm`、`_wrg_type_names`、`_wrg_fd_glob`、`_wrg_prefix`。
 
-### 4.4 `win` 的服务器分支
+### 4.4 `win`：一张两列表格（无选项）
 
-`win [-s|--server|-w|--wsl] [路径]`：
+`win [路径]` —— 可选的位置参数（不写 = 当前目录；相对路径按当前目录算），**没有任何选项**。
+2026-10-09 用户要求删掉 `-s` / `--server` / `-w` / `--wsl`（"win 不需要选项"）并改成表格输出。
 
-- `-s` / `--server` → 只走服务器分支；`-w` / `--wsl` → 只走 `wslpath`；
-- **不带开关时"该给的都给"**：WSL 上先打 `wslpath -w "${1:-.}"`，**紧接着**（有 `WIN_IP` 时）
-  走一遍服务器分支打 UNC / `//` / `smb://` / scp —— 用户 2026-10-07 要求"除 wslpath 外必须总是显示"；
-  那一路的 stderr 被吞掉（缺 smb.conf 时只少了那几行，不影响 wslpath 那行）；
-- 非 WSL：直接走服务器分支。服务器分支的细节：
+**参数校验**（`win` 开头那个 `case`）：`-`、`--help` / `-h` → stderr
+`用法：win [路径]（没有选项）`；其它 `-*` → stderr `win: 没有选项：'<参数>'。用法：win [路径]`；
+两种都 **rc=2、stdout 为空**。**任何以 `-` 开头的参数都不会流到 `wslpath`** ——
+旧版把 `$1` 透传给 `wslpath`，`win -m` 因此打出 `wslpath` 的 `Usage:`（用户截图里的那个 bug）。
 
-- 是 WSL → `wslpath -w . || return 1`，行为与加服务器分支之前逐字一致；
-- 不是 WSL → `_win_server`：
-  1. `target` = `realpath -m -- "$PWD"`（失败退回 `$PWD`）；
-  2. `ip` = `_win_ip`：**只读 `$WIN_IP`**（2026-10-07 起不再 `ip -4 addr` 探测 —— 服务器上探到的
-     是内网/VPC 地址，猜错比不猜更坏）。没设 → 返回 1，stderr 两行提示设 `WIN_IP`，**不打印任何一行**；
-  3. `conf` = `${WTOOL_SMB_CONF:-/etc/samba/smb.conf}`；
-  4. `_win_smb_shares` 用 awk 把 `[share]` 段与段内 `path =` 抽成 `share|path`
-     （跳过 `#` / `;` 行，去首尾空白与首尾引号）；
-  5. 每个 share 的 path 过 `realpath -m`，与 `target` 做**按路径分隔符对齐**的前缀比较
-     （`case "$target" in "$spath")` / `"$spath"/*)`），命中就记相对路径，
-     **最长前缀胜出**；
-    6. stdout：命中 → **四行**（顺序固定）：`\\<ip>\<share><相对路径>`（Windows UNC：资源管理器/CMD/PowerShell）、`//<ip>/<share><相对路径>`（Linux：`mount -t cifs //srv/share` / `smbclient //srv/share`）、`smb://<ip>/<share><相对路径>`（浏览器 / macOS Finder / GNOME Files）、`<whoami>@<ip>:<绝对路径>`（scp/rsync）；
-     `win: 读不到 samba 配置 <conf>`；没有命中 → stderr
-     `win: <conf> 里没有 share 的 path 匹配 <target>`；后两种 `rc=1`；
-  7. 最后 stdout 一定多一行 `<whoami>@<ip>:<target>`，`return $rc`。
+**表格**：表头 `usage  path` + 五行，`printf '%-5s  %s\n'` 定宽（第一列宽按最长的 `linux`=5），
+全表无颜色、无附加说明。表头是 **ASCII** —— `%-5s` 在 zsh 里按显示宽度补、在 bash 里按字节补，
+用中文表头两个 shell 的输出就不是逐字相同了。
+
+| 行 | 第二列 | 算它的地方 |
+|---|---|---|
+| `mac` | `smb://<ip>/<share><rel>` | samba 那一路 |
+| `win` | `\\<ip>\<share><rel>`（`/`→`\` 用 `printf ... \| sed`） | 同上 |
+| `scp` | `<whoami>@<ip>:<target>` | **不依赖 samba** |
+| `wsl` | `wslpath -w <参数>` 的结果；`this_is_wsl` 为假或 wslpath 不可用 → `-` | `win` 里算好传给 `_win_rows` |
+| `linux` | `//<ip>/<share><rel>` | samba 那一路 |
+
+`_win_rows <目标绝对路径> <wsl 行>` 负责五行第二列，按 `|` 分隔打成
+`mac|…` / `win|…` / …，`win` 再用 `while IFS='|' read -r _k _v` 摆进表格：
+
+1. `ip` = `$WIN_IP`（**只读环境变量，不探测 `ip addr`**，2026-10-07 起；
+   `_win_ip` 仍然在，`win` 不用它 —— 直接读变量就不会有 stderr）；
+2. **`ip` 为空** → `mac` / `win` / `scp` / `linux` 四行第二列 = `请设置 WIN_IP`
+   （用户原话），`wsl` 行照旧（它不靠 IP）；**stderr 一个字节都不打**，rc=0；
+3. 有 `ip` → `scp` 行照给；`conf` = `${WTOOL_SMB_CONF:-/etc/samba/smb.conf}`；
+4. `_win_smb_shares` 用 awk 把 `[share]` 段与段内 `path =` 抽成 `share|path`
+   （跳过 `#` / `;` 行，去首尾空白与首尾引号）；
+5. 每个 share 的 path 过 `realpath -m`，与 `target` 做**按路径分隔符对齐**的前缀比较
+   （`case "$target" in "$spath")` / `"$spath"/*)`），命中就记相对路径，
+   **最长前缀胜出**（这段逻辑从 2026-10-06 起没变过）；
+6. 命中 → `mac` / `win` / `linux` 三行按 share 拼；**读不到配置（`[ -r ]` 为假）
+   或没有命中 → 这三行 `-`，`_win_rows` 直接返回，不往 stderr 写任何东西**
+   （用户 2026-10-09："没有自然不支持，也不用专门打印出来错误信息"）；
+7. `win` 的退出码固定 **0**（打了表就是成功），只有参数校验那条路是 2。
+
+`realpath -m` 的边界：**测试夹具不把 share 的 `path` 指向 `/tmp` 本身**，
+而是指向 `mktemp -d` 造出来的 `$T/winws`（`$T` 在 Linux 上就在 `/tmp` 下，
+但 `realpath -m` 解析的是一个真实存在的唯一路径）。这条是 2026-10-09 换夹具时有意选的：
+`/tmp` 在有些系统上是软链，拿它当 share 的 `path` 会让"前缀匹配"多一层与 `win` 无关的变数
+（**这一条没在 macOS / Windows 上实测过**，本机是 WSL/Linux）。
 
 ### 4.5 `wrg`
 
@@ -433,7 +453,9 @@ done
 
 - 自己 `mktemp -d` 造夹具：假 repo 工作区（`$T/ws/.repo`、`$T/ws/a/b`、`$T/ws/ab`）、
   wrg 用的 `$T/src/{foo,bar}/Android.mk|Android.bp`、`$T/empty`、
-  win 用的假 `$T/smb.conf` / `$T/smb-nomatch.conf`；**不碰真 `$HOME`、不碰 `/etc/samba`**；
+  win 用的假工作区 `$T/winws/{ws/a/b,ws/ab}` + 假 `$T/winws/smb.conf` / `smb-nomatch.conf`
+  + 假 `wslpath`（`$T/winws/bin/wslpath`，把调用参数记下来）；
+  **不碰真 `$HOME`、不碰 `/etc/samba`**；
 - wrg 三后端的夹具单独一棵树 `$T/src2`（`keep/Android.mk` 里放着 `liba+b` / `libaaab` 这种
   正则元字符陷阱、`keep/Android.bp`、以及只有 find 看得到的 `.hidden/Android.bp`），
   外加一组"只有一个可执行名的假 PATH"`$T/bin-{rg,fdfind,fd-find,fd,none}`（用来逼出探测顺序）；
@@ -538,11 +560,21 @@ done
   上下文行一个转义都没有（逐字节）、
   ⑤ `$T/src7` 上三后端 `cmp`（`-A1 -B1` / 跨文件 `-A1` / `-t bp -C2` 各一条）+
   着色版本 auto / rg / fd 与 find 逐字一致；
+- **win 的表**（2026-10-09 改表格之后，两个 shell 各 15 条）：夹具是 `$T/winws`
+  （假工作区 + 假 `smb.conf` + 假 `wslpath`）。断言：①五行齐全（`mac`=`smb://`、
+  `win`=UNC、`linux`=`//`、`scp`=`user@ip:绝对路径`）、②非 WSL 时 `wsl` 行是 `-`、
+  ③没 `WIN_IP` → 四行 `请设置 WIN_IP` + **stderr 为空** + rc=0、
+  ④读不到 `smb.conf` / 没有 share 匹配 → `mac`/`win`/`linux` 是 `-` + **stderr 为空**、
+  ⑤最长前缀 + 路径分隔符对齐（`ws/ab` 命中 `[ws]` 而不是被更短的 `[proj]` 类前缀吃掉）、
+  ⑥`win <路径>` 对给定路径生效（与 `cd` 过去再 `win` 逐字相同）、
+  ⑦`win -m` **不碰 `wslpath`**（假 `wslpath` 没被调用 + stdout 里 `grep -ci usage|wslpath` = 0）、
+  ⑧`win -h` / `--server` 只打用法、rc=2、stdout 空。**没有"四行/五行的行数"这类脆弱断言**，
+  整张表用 `wtbl` 里的同一个 `printf '%-5s  %s\n'` 拼出来逐字比 —— 两个 shell 自然一致；
 - **反向验证**（2026-10-07 实测）：这一批新用例拿 `git show HEAD:env.zsh|env.bash`
-  （改动前那份）跑，**150 条 FAIL**（新实现 499 通过 / 2 失败，那 2 条是本机
-  `win | head -1` 的破管道老毛病）；
+  （改动前那份）跑，**150 条 FAIL**（当时新实现 499 通过 / 2 失败，那 2 条是当时本机
+  `win | head -1` 的破管道老毛病 —— 2026-10-09 改成表格后那两个 `head` 流水线不存在了）；
 - 后端相关的用例按"本机有没有那个可执行文件"跳过，所以条数随环境变：
-  同一个夹具下实测 2026-10-07（加完上下文与新选项之后）**rg+fd 都在 = 499 通过**
-  （另有 2 条本机 `win | head -1` 的破管道老毛病，与 wrg 无关）；
-  加这批之前是 299 通过 / 同样那 2 条失败；容器 `wrg-test` 里（非 WSL、没有 `ip`、mawk、
-  rg + fdfind）是 **497 通过 / 0 失败**（**以脚本最后一行输出为准**）。
+  同一个夹具下实测 **2026-10-09（win 改成表格之后）rg+fd 都在 = 529 通过 / 0 失败**
+  （两个 shell 的用例表除了"start 的补全注册"那 3 条之外逐字相同）；
+  2026-10-07（加完上下文与新选项之后）是 499 通过 / 2 失败；
+  容器 `wrg-test` 里（非 WSL、mawk）是 **497 通过 / 0 失败**（**以脚本最后一行输出为准**）。
