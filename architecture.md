@@ -128,7 +128,7 @@ done
   5. 每个 share 的 path 过 `realpath -m`，与 `target` 做**按路径分隔符对齐**的前缀比较
      （`case "$target" in "$spath")` / `"$spath"/*)`），命中就记相对路径，
      **最长前缀胜出**；
-  6. stdout：命中 → `//<ip>/<share><相对路径>`；读不到文件 → stderr
+    6. stdout：命中 → **四行**（顺序固定）：`\\<ip>\<share><相对路径>`（Windows UNC：资源管理器/CMD/PowerShell）、`//<ip>/<share><相对路径>`（Linux：`mount -t cifs //srv/share` / `smbclient //srv/share`）、`smb://<ip>/<share><相对路径>`（浏览器 / macOS Finder / GNOME Files）、`<whoami>@<ip>:<绝对路径>`（scp/rsync）；
      `win: 读不到 samba 配置 <conf>`；没有命中 → stderr
      `win: <conf> 里没有 share 的 path 匹配 <target>`；后两种 `rc=1`；
   7. 最后 stdout 一定多一行 `<whoami>@<ip>:<target>`，`return $rc`。

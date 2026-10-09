@@ -655,3 +655,15 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
 - **教训（写给下一个人）**：给**多行输出**的命令接 `| head` 时，若那条流水线又把 stderr 并进 stdout，
   就会把 EPIPE 噪音当成"实际值"——断言会以一个极像真 bug 的样子失败。
   判据：把同一条命令**不接 `head`** 跑一遍，输出对 → 就是测试的锅。
+
+## ✅ 2026-10-07：`win` 服务器分支补三种写法（UNC / `//` / `smb://`）
+
+- **用户反馈**：非 WSL 时只打 `//<ip>/<share>/<rel>`，而他日常在 Windows 上见的是 `\\<ip>\<share>\<rel>`（UNC）——
+  "在 windows 上全都是 `\\ip\name`，`//ip/name` 是在 linux、mac 上用的吗？两种都要加上"。
+- **改法**：`_win_server` 命中 share 时打**四行**（顺序固定）：① UNC `\\ip\share\rel`（Windows；rel 的 `/` 也转 `\`）
+  ② `//ip/share/rel`（Linux：`mount -t cifs` / `smbclient`）③ `smb://ip/share/rel`（浏览器 / Finder / GNOME Files）
+  ④ `<whoami>@<ip>:<绝对路径>`（scp）。UNC 行用 `printf '%s\n' "\\${ip}\${best}${_unc}"` 生成
+  （**不用 echo**：反斜杠在各 shell 的 echo 里行为不一）。
+- **判据**：`tests/env_test.sh` win 那 6 条改成断言四行（"按最长前缀挑 share"那条现在断言 **UNC 行**）；全绿。
+  真机样本留在 `/tmp/win-demo.txt`。
+- **回答用户**：是 —— `\\ip\share` 是 Windows UNC；`//ip/share` 是 Linux 侧写法；`smb://ip/share` 是浏览器/Finder 的 URL。三种各有去处，所以都打。
