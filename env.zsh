@@ -198,8 +198,18 @@ EOF
 
 win ()
 {
+    # 用法：win [路径]            —— WSL 上给 Windows 路径；服务器上给 samba/scp 三种写法
+    #       win -s|--server [路径] —— **强制走服务器分支**（在 WSL 上也能看/测那条路）
+    case ${1:-} in
+    -s | --server)
+        shift
+        _win_server "$@"
+        return $?
+        ;;
+    esac
     if this_is_wsl; then
-        wslpath -w . || return 1
+        # 带参数就给那个路径的 Windows 路径（老版本忽略参数、永远给 cwd —— 已修）
+        wslpath -w "${1:-.}" || return 1
         return 0
     fi
     _win_server "$@"

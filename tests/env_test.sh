@@ -417,6 +417,16 @@ $(whoami)@10.1.2.3:$target"
             WTOOL_SMB_CONF='$smb' win 2>/dev/null | tail -1")" \
         "$(whoami)@203.0.113.7:$target"
 
+    # ---- win -s / --server：强制服务器分支（在 WSL 上也走那条）----
+    chk "$sh：win -s 在 WSL 上也能拿到 UNC 那行" \
+        "$(sh_eval "$sh" "cd '$T/ws/ab'; WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win -s 2>/dev/null | head -1")" \
+        '\\10.1.2.3\ws\ab'
+    chk "$sh：win --server 与 -s 等价（四行全给）" \
+        "$(sh_eval "$sh" "cd '$T/ws/ab'; WIN_IP=10.1.2.3 WTOOL_SMB_CONF='$smb' win --server 2>/dev/null | wc -l")" "4"
+    chk "$sh：win（WSL 分支）现在认路径参数" \
+        "$(sh_eval "$sh" "cd '$T/ws/a/b'; win '$T/ws/ab' 2>/dev/null")" \
+        "$(wslpath -w "$T/ws/ab" 2>/dev/null || echo SKIP)"
+
     # ---- wrg：Android.mk / Android.bp 里的目标名 ----
     chk "$sh：wrg 精确匹配 Android.mk 的 LOCAL_MODULE" \
         "$(sh_eval "$sh" "cd '$T/src'; wrg libfoo")" \
