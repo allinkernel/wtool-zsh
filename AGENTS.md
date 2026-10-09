@@ -74,8 +74,8 @@
 ## 3. 验证（改完必须跑）
 
 ```sh
-bash tests/env_test.sh     # 两个 shell 各 11 条、共 22 条，应该全绿（条数以输出为准）
-                           # 没装 zsh 就只跑 bash 那 11 条
+bash tests/env_test.sh     # 529 条（2026-10-09 实测），应该全绿（条数以跑出来的为准）
+                           # 没装 zsh 就只能跑 bash 那一半
 ```
 
 - 用例表两个 shell 共用，断言别名、`_up_to_have_dir` / `cw`、`pdd`/`pss`、
