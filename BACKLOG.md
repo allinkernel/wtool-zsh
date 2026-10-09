@@ -667,3 +667,15 @@ zsh  -c "export WTOOL_PROJECT_DIR=/x; cd /var/log; . $R/env.zsh;  _up_to_have_di
 - **判据**：`tests/env_test.sh` win 那 6 条改成断言四行（"按最长前缀挑 share"那条现在断言 **UNC 行**）；全绿。
   真机样本留在 `/tmp/win-demo.txt`。
 - **回答用户**：是 —— `\\ip\share` 是 Windows UNC；`//ip/share` 是 Linux 侧写法；`smb://ip/share` 是浏览器/Finder 的 URL。三种各有去处，所以都打。
+
+## ✅ 2026-10-07（第二轮）：`win` 改成"该给的都给"
+
+- **用户反馈**（第一轮加完 UNC/smb:// 之后）："wslpath 是 wsl 上才显示的东西。**其他的都是必显示的才行**" ——
+  即 WSL 上不能只给 `wslpath` 那一行。
+- **改法**：`win [路径]` 在 WSL 上 = `wslpath -w "${1:-.}"` **+**（有 `WIN_IP` 时）服务器分支那四行
+  （UNC / `//` / `smb://` / scp）；服务器分支的 stderr 吞掉，缺 smb.conf 时只是少那几行。
+  另加 `-s|--server`（只给服务器那几行，便于在 WSL 上验证）与 `-w|--wsl`（只给 wslpath，老行为）。
+  顺带修：WSL 分支原来忽略路径参数（`wslpath -w .`），现在认 `$1`。
+- **判据**：`/tmp/win-demo.txt`（WSL 上 `win .` = 5 行、`win -s .` = 4 行）；`tests/env_test.sh` 531 通过 / 0 失败。
+- **过程教训**：第一版用"按行插入 `-q`"改 `_win_server`，把 `win()` 弄坏了（`command not found: win`）——
+  已 `git checkout --` 回滚重做，改成**只动 `win()`、不碰 `_win_server`** 的最小改法。

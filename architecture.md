@@ -115,7 +115,13 @@ done
 
 ### 4.4 `win` 的服务器分支
 
-`win` 先看 `this_is_wsl`：
+`win [-s|--server|-w|--wsl] [路径]`：
+
+- `-s` / `--server` → 只走服务器分支；`-w` / `--wsl` → 只走 `wslpath`；
+- **不带开关时"该给的都给"**：WSL 上先打 `wslpath -w "${1:-.}"`，**紧接着**（有 `WIN_IP` 时）
+  走一遍服务器分支打 UNC / `//` / `smb://` / scp —— 用户 2026-10-07 要求"除 wslpath 外必须总是显示"；
+  那一路的 stderr 被吞掉（缺 smb.conf 时只少了那几行，不影响 wslpath 那行）；
+- 非 WSL：直接走服务器分支。服务器分支的细节：
 
 - 是 WSL → `wslpath -w . || return 1`，行为与加服务器分支之前逐字一致；
 - 不是 WSL → `_win_server`：

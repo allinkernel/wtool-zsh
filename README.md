@@ -164,6 +164,11 @@ win        # 打路径，一行或两行
 | 4 | `<whoami>@<ip>:<绝对路径>` | 直接 `scp`/`rsync` 用 |
 | ~~1~~ | ~~`//<ip>/<share><相对路径>`~~ | ~~旧版只有这一行~~ | 读 `/etc/samba/smb.conf` 的 `[share]` + `path = …`，取**最长前缀匹配**目标目录的那个 share（按路径分隔符对齐：share `path=/srv/share` 不会被 `/srv/share2` 命中），拼上目标目录相对 share 的那段 |
 
+- **`win` 的三种用法**：`win [路径]` = **该给的都给**（WSL 上先给 `wslpath -w` 那行，
+  **再给** UNC / `//` / `smb://` / scp 四行 —— 用户 2026-10-07 要求"其他几种必须总是显示"）；
+  `win -s|--server [路径]` = 只给服务器那四行（在 WSL 上也能看/测那条路）；
+  `win -w|--wsl [路径]` = 只给 `wslpath` 那行（老行为）。
+  WSL 上要看到那四行需 `WIN_IP`；没有 smb.conf 时那四行静默跳过（只有 `wslpath` 那行）。
 - `<ip>`：**必须来自环境变量 `WIN_IP`** —— 本命令**不做 `ip addr` 探测**（服务器上探到的
   常常是内网/VPC 地址，猜错比不猜更坏）。没设就报错、不打印任何一行。
 - smb.conf 的路径可以用 `WTOOL_SMB_CONF` 覆盖（默认 `/etc/samba/smb.conf`）；

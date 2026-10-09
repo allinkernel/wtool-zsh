@@ -198,18 +198,28 @@ EOF
 
 win ()
 {
-    # 用法：win [路径]            —— WSL 上给 Windows 路径；服务器上给 samba/scp 三种写法
-    #       win -s|--server [路径] —— **强制走服务器分支**（在 WSL 上也能看/测那条路）
+    # 用法：win [路径]              —— 该给的都给：WSL 上给 wslpath 那行，**同时**给 UNC / // / smb:// / scp
+    #       win -s|--server [路径] —— 只给服务器那几行（不跑 wslpath）
+    #       win -w|--wsl [路径]    —— 只给 wslpath（老行为）
     case ${1:-} in
     -s | --server)
         shift
         _win_server "$@"
         return $?
         ;;
+    -w | --wsl)
+        shift
+        wslpath -w "${1:-.}"
+        return $?
+        ;;
     esac
     if this_is_wsl; then
-        # 带参数就给那个路径的 Windows 路径（老版本忽略参数、永远给 cwd —— 已修）
-        wslpath -w "${1:-.}" || return 1
+        wslpath -w "${1:-.}"
+        # 用户要求（2026-10-07）：除 wslpath 外，那几种写法**也必须总是显示**。
+        # 缺 WIN_IP / 读不到 smb.conf 时那几行给不出来 —— 静默跳过（wslpath 那行照样有效）。
+        if [ -n "${WIN_IP:-}" ]; then
+            _win_server "$@" 2>/dev/null || true
+        fi
         return 0
     fi
     _win_server "$@"
