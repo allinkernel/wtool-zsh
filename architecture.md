@@ -109,12 +109,28 @@ __output/usr -> ubuntu_<本机>/usr -> main/payload/usr        （两级，都�
 | 判据 | 怎么跑 | 现在的结果 |
 |---|---|---|
 | 三个发行版各自能编出来 | `wtool build shell/zsh` | ✅ 见 `BACKLOG.md` 的实测数字 |
-| 产物要求的最低 glibc | `objdump -p …/bin/zsh \| grep -o 'GLIBC_[0-9.]*' \| sort -uV \| tail -1` | 22.04 → 2.35 / 24.04 → **2.38** / 26.04 → 2.43 |
+| 产物要求的最低 glibc | `objdump -p …/bin/zsh \| grep -o 'GLIBC_[0-9.]*' \| sort -uV \| tail -1` | 22.04 → 2.34 / 24.04 → **2.38** / 26.04 → 2.38 |
 | 二进制不依赖 libcap | `ldd …/bin/zsh` | 只有 `libtinfo.so.6 libm.so.6 libc.so.6`（+ vdso/ld） |
 | 跨发行版起不来（三套的理由） | 把 24.04 那份拿到 `ubuntu:22.04` 容器里跑 | ❌ `version 'GLIBC_2.38' not found` |
-| 装完之后交互式能起 | `zsh -ic 'echo INTERACTIVE_OK'` | 见 `BACKLOG.md`（**必须真跑**，不许只写"已装"） |
+| 装完之后交互式能起 | `zsh -ic 'echo INTERACTIVE_OK'` | ✅ 只有 `INTERACTIVE_OK`（+ rc 自己那 4 行 `can't change option: zle`，**系统 zsh 同样有**，不是本项目引入的） |
+| 登录 / 嵌套 shell | `zsh -lic 'echo OK'` / `zsh -ic 'zsh -ic "echo OK"'` | ✅ 都过 |
+| 补全系统真能用 | `zsh -ic 'autofile… compinit -u; zstyle …'` | ✅ `COMPINIT_OK` + `ZSTYLE_OK` |
 | 清单合法 | `wtool validate shell/zsh` | rc=0 |
+| 装完账目干净 | `wtool check` | rc=0「一切对得上」 |
 | 引擎回归没被带坏 | `cd wtool-base-tools/tests && sh run_all.sh` | 13 组全绿 |
+
+**env 块的加载顺序是判据的一部分**（不是细节）：
+
+```sh
+grep -n '^# --- wtool:' "$WTOOL_HOME/env.zsh" | head -2   # 第一块必须是 wtool:shell/zsh
+zsh -ic 'echo ok' 2>&1 | wc -l                            # 5（= 1 行 ok + rc 自己那 4 行）
+```
+
+排在别人后面会怎样（实测）：整屏
+`failed to load module 'zsh/parameter': /root/.wtool/usr/lib/zsh/5.9.2/zsh/parameter.so`
+—— 因为 `module_path` 只有本文件能改对，而工具块（priority 5）与 oh-my-zsh（10）
+在它之前就 `zmodload` / `compinit` 了。
+
 
 ## 6. 不知道 / 没做的
 

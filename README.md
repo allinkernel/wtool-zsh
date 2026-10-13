@@ -122,6 +122,10 @@ $WTOOL_HOME/usr/share/zsh      → …/__output/usr/share/zsh      （functions 
   绝对路径**（容器里那个 `/root/.wtool/usr`），而你机器上的 `$WTOOL_HOME` 十有八九
   不是同一个串。不重设的症状是"补全和行编辑像个残废 zsh"（模块 `.so` 一个都找不到）。
   `env.zsh` 从 `$WTOOL_HOME` 现算，绝不写死构建路径。
+* ⚠️ **这个修复必须第一个生效**，所以本项目的 env 块是 `$WTOOL_HOME/env.zsh` 里的
+  **第一块**（根元素 `priority="1"`）。理由：汇总里 `wtool-base-tools` 的工具块
+  （priority 5）自己会 `zmodload zsh/parameter`、oh-my-zsh（10）会 `compinit` ——
+  **谁排在我们前面，谁就报一屏 `failed to load module`**（实测踩过，见 `wtool.xml` 注释）。
 * 这个项目**不碰你的 `$HOME`**，也不改 `~/.zshrc`：那条 `source ${WTOOL_HOME}/env.zsh`
   是你自己加的（引擎会提示，但**不代写**）。
 
