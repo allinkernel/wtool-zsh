@@ -28,9 +28,19 @@
 
   <!-- shell 集成：内容被汇总进 $WTOOL_HOME/env.zsh / env.bash，
        你的 rc 里只有那两行（export WTOOL_HOME + source …/env.{zsh,bash}）。
-       priority=20 = 早一点加载：它要重设 fpath / module_path，越早越好。 -->
-  <zshrc  src="env.zsh"  priority="20"/>
-  <bashrc src="env.bash" priority="20"/>
+
+       ‼️ priority=1 = **抢在所有人前面加载**，这不是洁癖：
+       zsh 把 module_path 编进了二进制，而这个仓库的产物装在 $WTOOL_HOME 下
+       （编译时那个前缀在目标机上不存在）—— 只有本文件能把 fpath / module_path
+       改成对的。**谁在它之前 zmodload/autoload，谁就失败**：
+       实测 `wtool-base-tools` 那个工具块（priority 5）里的 completion/wtool.zsh
+       会 `zmodload zsh/parameter`，oh-my-zsh（10）会 compinit —— 都排在
+       priority 20 的项目块前面，于是整个登录 shell 刷一屏
+       `failed to load module 'zsh/parameter': /root/.wtool/usr/lib/…`。
+       改成 1 之后那屏错误消失（判据：`zsh -ic 'echo ok' 2>&1 | wc -l` == 1）。
+       1 < 工具块的 5，所以它一定是第一个。 -->
+  <zshrc  src="env.zsh"  priority="1"/>
+  <bashrc src="env.bash" priority="1"/>
 
   <!-- 怎么构建（ADR-025）：每个发行版一个容器。层清单在 build/layers.tsv，
        基础镜像在 build/targets.tsv —— 引擎按固定路径找它们，不进 XML。 -->
