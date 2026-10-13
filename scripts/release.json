@@ -34,16 +34,65 @@
       }
     ]
   },
-  "repo": "",
-  "tag": "",
-  "base_url": "",
-  "assets": [],
-  "commit": "",
-  "packed_at": "",
-  "published_at": "",
-  "wtool_engine": "",
-  "volume_size": "",
-  "declare": [],
-  "targets": [],
-  "how": "# 断网机（没有 wtool，也不联网）：从离线 tag offline-2026-10-14 的发布页人工下载\nunzip release-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"\nwtool install shell/zsh            # 东西都在包里，不联网"
+  "repo": "allinkernel/wtool-zsh",
+  "tag": "ds_dev-2026-10-14",
+  "base_url": "https://github.com/allinkernel/wtool-zsh/releases/download/ds_dev-2026-10-14",
+  "assets": [
+    {
+      "name": "dist.json",
+      "role": "",
+      "bytes": 916,
+      "sha256": "691775005d7cdb118e8f679fc7c1557b7f8c8b55f1216662657085526d57628d"
+    },
+    {
+      "name": "release-hash.txt",
+      "role": "",
+      "bytes": 78,
+      "sha256": "38abd200c3d71594c46cf110fa3caab9137bc02442dd01428567edea4b2db8ea"
+    },
+    {
+      "name": "release.zip",
+      "role": "release",
+      "bytes": 10149081,
+      "sha256": "b89addcf898a481272579a8a98ab85e33c61026b17c5a4fef418e09a9b5728e3"
+    },
+    {
+      "name": "source-hash.txt",
+      "role": "",
+      "bytes": 77,
+      "sha256": "e91301c6de95156d7cc389eeb90e7ae1be8ca7cd18d15310de572d5d2706ce9e"
+    },
+    {
+      "name": "source.zip",
+      "role": "source",
+      "bytes": 4716292,
+      "sha256": "0d03376923d3b80385d3334a1cb2321b0063564dbd3a0c10853141386cc877b8"
+    }
+  ],
+  "commit": "970154c2458686af57032b969d10cb01db1b08cf",
+  "packed_at": "2026-10-14T03:56:28+0800",
+  "published_at": "2026-10-14T04:23:55+08:00",
+  "wtool_engine": "1.0.0",
+  "volume_size": "32M",
+  "declare": [
+    "wtool.xml",
+    "env.zsh",
+    "env.bash"
+  ],
+  "targets": [
+    {
+      "target": "ubuntu_22.04"
+    },
+    {
+      "target": "ubuntu_24.04"
+    },
+    {
+      "target": "ubuntu_26.04"
+    },
+    {
+      "target": "usr"
+    }
+  ],
+  "how": "wtool download-release shell/zsh   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release shell/zsh     # 拼分卷 + 解到 __output/\nwtool install shell/zsh            # 装到本机\n\n# 断网机（没有 wtool，也不联网）：从离线 tag offline-2026-10-14 的发布页人工下载\nunzip release-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"\nwtool install shell/zsh            # 东西都在包里，不联网",
+  "dirty": false
 }
