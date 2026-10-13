@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "project": "shell/zsh",
+  "offlineTag": "",
+  "artifacts": {
+    "release-offline.zip": [
+      {
+        "from": "wtool/**",
+        "to": "."
+      }
+    ],
+    "release.zip": [
+      {
+        "from": "__output/**",
+        "to": "__output"
+      },
+      {
+        "from": "wtool.xml",
+        "to": "."
+      },
+      {
+        "from": "env.zsh",
+        "to": "."
+      },
+      {
+        "from": "env.bash",
+        "to": "."
+      }
+    ],
+    "source.zip": [
+      {
+        "from": "wtool/shell/zsh/**",
+        "to": ""
+      }
+    ]
+  },
+  "repo": "",
+  "tag": "",
+  "base_url": "",
+  "assets": [],
+  "commit": "",
+  "packed_at": "",
+  "published_at": "",
+  "wtool_engine": "",
+  "volume_size": "",
+  "declare": [],
+  "targets": [],
+  "how": "# 断网机（没有 wtool，也不联网）：从离线 tag offline-<日期> 的发布页人工下载\nunzip release-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"\nwtool install shell/zsh            # 东西都在包里，不联网"
+}
