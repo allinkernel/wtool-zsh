@@ -155,3 +155,19 @@ Src/Zle/zle_widget.h
 
 Test/*.tmp
 /.project
+
+# ── 以下是这份 fork 加的（wtool 打包/构建产物的落点，ADR-0033）──────────────
+# 上面那一段一个字没动：这是上游的 .gitignore，保留它的可辨识度。
+#
+# 产物目录（编出来的东西、docker 层、发布包）**都不进 git**：
+#   __output/<target>/main/payload/…   引擎从容器层导出来的安装产物
+#   __output/<target>/usr              别名链 → main/payload/usr
+#   __output/usr                       **本机发行版**那一套（scripts/build.sh 建）
+#   __layer/<target>/                  OCI 布局（push-layer 推的就是它）
+#   __release/                         打包上传的东西
+/__output/
+/__layer/
+/__release/
+
+# 机器本地覆盖（wtool.xml 里 <include src="wtool.local.xml" optional="true"/>）
+/wtool.local.xml

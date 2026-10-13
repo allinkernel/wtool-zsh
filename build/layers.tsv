@@ -1,0 +1,19 @@
+# shell/zsh 的层清单（wtool 的 `<build kind="docker">` 读它，ADR-0029）
+#
+#   层名 <TAB> 父层 <TAB> 镜像名 <TAB> 容器里跑的命令
+#
+# · 父层 `-` = 从 targets.tsv 里那个基础镜像出发
+# · 镜像名 `-` = 占位层（不构建，只留一个空的 __output 层）—— 本清单不用
+# · 命令里的 `{target}` 由**引擎**替换成当前目标（ubuntu_22.04 / _24.04 / _26.04）
+# · `/proj` 是项目在容器里的挂载点（**只读**），`cd /proj` 之后才跑命令
+# · 顺序 = 同批的顺序；父层就绪的层会被并行跑（本项目每层独立，只有一层）
+#
+# 只有一层，而且**三个发行版各跑一遍**（引擎按 targets.tsv 逐个目标编）。
+# 这一层装什么、编什么，全在 scripts/build.sh 的 `--in-docker` 分支里 ——
+# 引擎管生命周期（起容器 / commit / 落 __layer/ / 导 __output/），项目管这一层的内容。
+#
+# 产物落点（引擎的约定，`wt_layer_export` 定的）：
+#   容器里   /root/.wtool/usr/{bin,lib,share}/…     ← build.sh 的 --prefix
+#   __layer/ <target>/（OCI 布局，push-layer 推的就是它）
+#   __output/<target>/main/payload/usr/…            ← payload 相对影子 $HOME
+main	-	wtool/zsh-usr	sh /proj/scripts/build.sh --in-docker --target={target}

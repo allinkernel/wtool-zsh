@@ -1,0 +1,14 @@
+# 导出时丢什么（一行一个 tar --exclude 通配，# 注释）—— ADR-0029 / ADR-0030。
+#
+# 这份文件的存在本身是契约：它决定"什么会被发到别人机器上"（ADR-025 §5 要求
+# 导出规则是显式的，不能藏在脚本的 find | grep -v 里）。
+#
+# 今天**没有额外的 pattern**，这是有意的：
+#   · 容器里 apt 装出来的 /usr、/lib（层差量里有，但不是我们的安装产物）
+#     由导出规则本身挡掉 —— `wt_layer_export` 只取 `root/.wtool/*` 那一条通配。
+#   · 编译中间物（.o / .a / config.log）**根本不在 /root/.wtool/ 下**：
+#     scripts/build.sh 在 /src 里编，只把 `make install` 的结果放进 /root/.wtool/usr。
+#     ← 这一条是"产物别把源码/中间物带进 __output"的**机制**，不是靠这里删。
+#   · 白障（.wh.*）引擎默认就丢。
+#
+# 真要"多丢一点"（比如哪天不想要 usr/share/zsh/5.9.2/help），写在这儿。

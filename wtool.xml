@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  shell/zsh —— zsh 源码 + docker 跨发行版构建（wtool ③ 类项目，ADR-0045 §1.4）
+
+  上游是 zsh-users/zsh（本仓是它的 fork，见 README「上游 / 这份 fork 改了什么」）。
+  这份 XML 只声明"**这个项目是什么类型、产物怎么导出去、env 从哪来**"，
+  不描述怎么编 —— 怎么编在 build/{targets,layers}.tsv + scripts/build.sh 里。
+
+  kind="docker"（**根元素**，项目类型）与 <build kind="docker"/>（**怎么构建**）
+  是同一个词回答两个问题（manifest-schema.md 专门提醒过这一点）：
+  前者让引擎知道"这个项目支持 build / unpack-layer / push-layer / pull-layer"，
+  后者让它知道"产物在 __output/<os>_<ver>/… 下、本机没 docker 就该拒绝"。
+
+  ⚠️ 产物形状（**实测**，不是照抄设计稿；细节见 README「产物落在哪」）：
+      容器里    /root/.wtool/usr/{bin,lib,share}/…           ← build.sh 装到这儿
+      __layer/  <target>/（OCI 布局；push-layer 推的就是它）
+      __output/ <target>/main/payload/usr/{bin,lib,share}    ← 引擎 wt_layer_export 落的
+      __output/ <target>/usr   → main/payload/usr            ← build.sh 做的别名链
+      __output/ usr            → <本机发行版>/usr             ← **本机选哪一套**
+  所以下面那条 src 指的是**别名链**，不是引擎直接落的那个目录：只有它不带发行版
+  名字，而 <export_usr src=…> 是**静态**的（引擎不做按发行版替换，这是 ADR-0045
+  里还开着的 Q5）。三条链都落在 __output/ 里、都是相对软链、都不进 git。
+
+  注：XML 注释里不能出现连续两个减号，所以本文件里长选项一律不写 —— 那些数字和
+  理由记在 README.md 与 architecture.md 里（那边不受这个限制）。
+-->
+<wtool schema="1" kind="docker" priority="20">
+
+  <!-- shell 集成：内容被汇总进 $WTOOL_HOME/env.zsh / env.bash，
+       你的 rc 里只有那两行（export WTOOL_HOME + source …/env.{zsh,bash}）。
+       priority=20 = 早一点加载：它要重设 fpath / module_path，越早越好。 -->
+  <zshrc  src="env.zsh"  priority="20"/>
+  <bashrc src="env.bash" priority="20"/>
+
+  <!-- 怎么构建（ADR-025）：每个发行版一个容器。层清单在 build/layers.tsv，
+       基础镜像在 build/targets.tsv —— 引擎按固定路径找它们，不进 XML。 -->
+  <build kind="docker"/>
+
+  <!-- 产物导出成 L2 链（ADR-0045 §1.5 / D7）：
+         $WTOOL_HOME/usr/bin/zsh       → …/__output/usr/bin/zsh
+         $WTOOL_HOME/usr/lib/zsh       → …/__output/usr/lib/zsh
+         $WTOOL_HOME/usr/share/zsh     → …/__output/usr/share/zsh
+       usr/bin、usr/lib、usr/share 本身永远是**实体目录**（所有项目共享），
+       里面一条一链。不带 part= 是有意的：让 src 下出现白名单外的子目录时**报错**
+       （这正是"不装 man 页"的原因之一），而不是悄悄少装一个位置。 -->
+  <export_usr src="__output/usr"/>
+
+  <!-- 机器本地覆盖（不入库）。没有这个文件就跳过。 -->
+  <include src="wtool.local.xml" optional="true"/>
+</wtool>
