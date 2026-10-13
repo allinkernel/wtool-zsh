@@ -192,6 +192,14 @@ zsh 把 `module_path`（`$WTOOL_HOME/usr/lib/zsh/5.9.2`）**编进了二进制**
 | 交互式 shell（读 rc → `env.zsh`）：`zle` / `compinit` / `zmodload zsh/stat` | ✅ 全 OK |
 | 子进程 `zsh -c` 里 `autoload` 一个函数（靠 `env.zsh` 导出的 `FPATH`） | ✅ OK（`FPATH` 是**可以**从环境导入的） |
 | 子进程 `zsh -c` 里 `zmodload zsh/stat`（不读 rc） | ❌ `failed to load module … /root/.wtool/usr/…` |
+| **完全不读 rc 的 zsh**（`zsh -f` / 脚本）：`autoload -Uz compinit` | ❌ `compinit: function definition file not found`（我们的 functions 在 `$WTOOL_HOME/usr/share/zsh/…`，而编译进去的是构建时的路径） |
+
+⚠️ 最后那条有个**现实后果**：`wtool-base-tools/tests/contract_test.sh` 里
+「zsh 里 wtool 挂到了 _wtool」那一条就是拿 `zsh -f` 测的 —— **装过 shell/zsh 的机器上
+`zsh` 就是本项目这份**，于是它 `PASS 312 FAIL 1`（`run_all.sh` 会在这一组停下）；
+把系统 zsh 放前面（`PATH=/usr/bin:$PATH sh contract_test.sh`）就是 `PASS 313 FAIL 0`。
+两条都实测过。**这不是 shell/zsh 坏了，是"测试假设 PATH 上那个 zsh 自带 functions"**，
+引擎侧该修（`shell/zsh/BACKLOG.md` Z-11）。
 
 **为什么不干脆 `--disable-dynamic`（把模块全静态链进去，那样就没有路径问题）** ——
 量过了，**不划算**：zsh 有 **19 个只能动态构建的模块**（`Src/Modules/*.mdd` 里
