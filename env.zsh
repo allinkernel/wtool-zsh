@@ -25,6 +25,14 @@ fi
 [ -n "${WTOOL_PROJECT_DIR:-}" ] || WTOOL_PROJECT_DIR="$WTOOL_HOME/wtool/shell/zsh"
 export WTOOL_ZSH_DIR="$WTOOL_PROJECT_DIR"
 
+# 让 `zsh` 去读 `$WTOOL_HOME/.zshenv`（那里按 $WTOOL_HOME 现算 module_path/fpath）。
+#
+# 为什么必须：zsh 的 module_path/fpath 是**编译时前缀**（构建容器里的
+# /root/.wtool/usr/…），换机器就加载不到动态模块（zsh/zle、zsh/parameter…）；
+# MODULE_PATH 又不允许从环境导入 —— `.zshenv` 是**唯一**能修的位置（2026-10-21 VM 实测）。
+# 那份 .zshenv 读完会把 ZDOTDIR 还原成 $HOME，所以你的 ~/.zshrc 照旧生效。
+export ZDOTDIR="${ZDOTDIR:-$WTOOL_HOME}"
+
 # ⚠️ 本文件**不往 PATH 里塞东西**：$WTOOL_HOME/usr/bin 由引擎统一放最前
 #    （ADR-0045 §1.2 / D48），每个项目再插一次只会插出重复项。
 #    这一段留下来是因为**装错了要能立刻看出来**：缺了它，症状是"wtool install

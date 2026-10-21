@@ -106,6 +106,34 @@ else
     say "注意：$_L2 还不在 —— 正常 wtool install 会先建它，这里是手工跑吧？"
 fi
 
+# ── ⑤ $WTOOL_HOME/.zshenv：module_path / fpath ─────────────────────────────
+#
+# zsh 的 module_path/fpath **初值**是编译时前缀（构建容器里的 /root/.wtool/usr），
+# 而 `MODULE_PATH` **不允许从环境导入**（Src/params.c 写着 PM_DONTIMPORT，
+# "not imported for security reasons"）→ 只能靠 `.zshenv` 在
+# "**任何 rc、任何模块加载之前**"改。
+#
+# 谁读这份：
+#   · 从 bash 敲 `zsh` —— 项目的 env.* 导出了 ZDOTDIR=$WTOOL_HOME，zsh 就读这里；
+#   · zsh 当登录 shell —— 引擎写进 ~/.zshenv 的那段（同样的内容）兜住。
+# 读完立刻把 ZDOTDIR 还原成 $HOME，**保证随后仍然读用户的 ~/.zshrc**。
+#
+# 2026-10-21 VM 实测的症状（没有它）：`zsh: failed to load module 'zsh/zle':
+# /root/.wtool/usr/lib/zsh/5.9.2/zsh/zle.so: ... Permission denied`，zsh 直接不能用。
+_ZSENV="$WTOOL_HOME/.zshenv"
+cat > "$_ZSENV" <<ZEOF
+# 由 wtool 的 shell/zsh 项目 install.sh 生成 —— **别手改**，重装会覆盖。
+# 读法：ZDOTDIR 指向这里时 zsh 会自动读它（在任何 rc、任何模块加载之前）。
+if [ -n "\${ZSH_VERSION:-}" ] && [ -d "$WTOOL_HOME/usr/lib/zsh" ]; then
+    module_path=("$WTOOL_HOME/usr/lib/zsh/\$ZSH_VERSION" \$module_path)
+    fpath=("$WTOOL_HOME/usr/share/zsh/\$ZSH_VERSION/functions" "$WTOOL_HOME/usr/share/zsh/site-functions" \$fpath)
+fi
+# 读完立刻把 ZDOTDIR 还原成 HOME —— 这样随后仍然读你的 ~/.zshrc
+ZDOTDIR="\$HOME"
+export ZDOTDIR
+ZEOF
+say "⑤ .zshenv：$_ZSENV（module_path/fpath，读完还原 ZDOTDIR）"
+
 cat <<EOF
 
 ⚠️ 最后一步请**自己**确认（别只信这句）：开一个**新的登录 shell** 敲
