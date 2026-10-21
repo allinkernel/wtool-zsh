@@ -122,9 +122,9 @@ fi
 # /root/.wtool/usr/lib/zsh/5.9.2/zsh/zle.so: ... Permission denied`，zsh 直接不能用。
 _ZSENV="$WTOOL_HOME/.zshenv"
 cat > "$_ZSENV" <<ZEOF
-# 由 wtool 的 shell/zsh 项目 install.sh 生成 —— **别手改**，重装会覆盖。
+# 由 wtool 生成 —— **别手改**，重装会覆盖。
 # 读法：ZDOTDIR 指向这里时 zsh 会自动读它（在任何 rc、任何模块加载之前）。
-# 路径一律用 ${WTOOL_HOME} 现算（**不许写死这台机器的绝对路径** —— 这份文件
+# 路径一律用 ${WTOOL_HOME} 现算（**不许写死某台机器的绝对路径** —— 这份文件
 # 会被打进整机包，装到别人的机器上；写死就会去不存在的目录找 .so）。
 if [ -n "\${ZSH_VERSION:-}" ] && [ -d "\${WTOOL_HOME}/usr/lib/zsh" ]; then
     module_path=("\${WTOOL_HOME}/usr/lib/zsh/\$ZSH_VERSION" \$module_path)
