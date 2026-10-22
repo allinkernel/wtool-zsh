@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "project": "shell/zsh",
-  "offlineTag": "offline-2026-10-21",
+  "offlineTag": "offline-2026-10-22-r2",
   "artifacts": {
     "release-offline.zip": [
       {
