@@ -82,20 +82,24 @@ ln -sfn ubuntu_24.04/usr __output/usr      # 把 24.04 换成你那个发行版
    * `libncurses-dev` 少了 → `configure: error: "No terminal handling library was found"`
    * `autoconf` 少了 → `./configure: not found`（git 检出里**没有** `configure`，
      上游只在 release tarball 里带；本仓用 `Util/preconfig` 现生成）
-3. 把源码从只读的 `/proj` 拷到 `/src`，`./configure --prefix=/root/.wtool/usr`；
-4. `make` → `make install.bin install.modules install.fns`；
-5. 在容器里立刻自检一次（`zsh --version` / `ldd` / glibc 门槛 / 体积），然后引擎
+3. 把源码从只读的 `/proj` 拷到 `/src`；
+4. `./configure --prefix=$(cat build/prefix-placeholder)` —— **编译期前缀是一个够长的
+   占位符**（`/w/zsh-placeholder-…/usr`），不是 `/root/.wtool/usr`；
+5. `make` → `make install.bin install.modules install.fns` → 把装到占位前缀的那棵树
+   搬进容器里的 `/root/.wtool/usr`（引擎只导出这棵）；二进制里**仍然**是占位前缀；
+6. 在容器里立刻自检一次（占位前缀在不在、`module_path[1]` 是不是它、`zsh --version` /
+   `ldd` / glibc 门槛 / 体积），然后引擎
    `docker commit` → `__layer/<target>/`（OCI 布局）→ 导出 `__output/<target>/main/payload/`。
 
 一次目标大约 **1.5 分钟**（32 核，`make -j32`）；三个目标串行约 5 分钟。
-第 5 步之后产物**只有 `/root/.wtool/usr` 这一棵子树** —— 源码和 `.o` 中间物留在 `/src`，
+装完之后产物**只有 `/root/.wtool/usr` 这一棵子树** —— 源码和 `.o` 中间物留在 `/src`，
 **不进产物**（引擎的导出规则只取容器里 `root/.wtool/*`）。
 
 ### configure 的那几个开关（都有理由，别顺手删）
 
 | 开关 | 为什么 |
 |---|---|
-| `--prefix=/root/.wtool/usr` | 容器里的**影子 `$HOME`**：引擎把 `root/.wtool/*` 剥两节导成 payload。`/root` 是容器的 `$HOME`，正好对上"换台机器 = `~/.wtool`"那个形状 |
+| `--prefix=$(cat build/prefix-placeholder)` | **不是** `/root/.wtool/usr`：编进二进制的是 256 字节占位前缀，安装时 `install.sh` 再把它缩成真实的 `$WTOOL_HOME/usr`（H38）。`make install` 装到占位目录后再搬到 `/root/.wtool/usr`，所以引擎看到的形状不变。占位前缀够长，短目标用 NUL 补齐；目标路径超过 256 字节会**装不了**（报错，不会装坏） |
 | `--disable-cap` | 否则二进制会**硬依赖 `libcap.so.2`**，而 `ubuntu:26.04` 基础镜像里**没有它**（实测：22.04/24.04 有，26.04 没有）。zsh 的 cap 支持只给 `zsh/cap` 模块用，日常用不到 |
 | `--disable-gdbm` / `--disable-pcre` | 这两个库的**默认值本来就是 off**，写出来是为了"哪天被默认值改了"能一眼看见，而不是靠运气 |
 
@@ -118,14 +122,15 @@ $WTOOL_HOME/usr/share/zsh      → …/__output/usr/share/zsh      （functions 
 
 * `$WTOOL_HOME/usr/bin` 由**引擎统一放在 `PATH` 最前**，所以敲 `zsh` 就是它；
   想看系统那个：`command -v zsh` 之后直接敲绝对路径 `/usr/bin/zsh`。
-* **`fpath` / `module_path` 必须在 `env.zsh` 里重设**：`--prefix` 是**编进二进制的
-  绝对路径**（容器里那个 `/root/.wtool/usr`），而你机器上的 `$WTOOL_HOME` 十有八九
-  不是同一个串。不重设的症状是"补全和行编辑像个残废 zsh"（模块 `.so` 一个都找不到）。
-  `env.zsh` 从 `$WTOOL_HOME` 现算，绝不写死构建路径。
-* ⚠️ **这个修复必须第一个生效**，所以本项目的 env 块是 `$WTOOL_HOME/env.zsh` 里的
-  **第一块**（根元素 `priority="1"`）。理由：汇总里 `wtool-base-tools` 的工具块
-  （priority 5）自己会 `zmodload zsh/parameter`、oh-my-zsh（10）会 `compinit` ——
-  **谁排在我们前面，谁就报一屏 `failed to load module`**（实测踩过，见 `wtool.xml` 注释）。
+* **`fpath` / `module_path` 现在由安装期二进制补丁修好**：`configure --prefix` 编进去的是
+  占位前缀，`scripts/install.sh` 在引擎建完 L2 链之后把它换成真实的 `$WTOOL_HOME/usr`
+  （sidecar 记着占位符/当前前缀，重复安装不重复打、换路径能再打、卸载会还原）。
+  所以 **`zsh -f`（不读任何 rc）也能加载动态模块、fpath 也对**。
+  `env.zsh` 里那段 `fpath`/`module_path` 仍然保留，是给旧二进制/交互式兜底，见 §6。
+* **env 块仍然是第一块**（根元素 `priority="1"`），但理由变了：二进制补丁之后新产物
+  不再依赖它；保留是给**旧二进制**（升级前装的 / 整机包里还没重装的）。旧产物上
+  `wtool-base-tools`（priority 5）的 `zmodload`、oh-my-zsh（10）的 `compinit` 会抢在前面
+  报一屏 `failed to load module`（实测踩过，见 `wtool.xml` 注释）。
 * 这个项目**不碰你的 `$HOME`**，也不改 `~/.zshrc`：那条 `source ${WTOOL_HOME}/env.zsh`
   是你自己加的（引擎会提示，但**不代写**）。
 
@@ -134,6 +139,7 @@ $WTOOL_HOME/usr/share/zsh      → …/__output/usr/share/zsh      （functions 
 ```sh
 zsh --version                      # 有输出
 zsh -ic 'echo INTERACTIVE_OK'      # 交互式真能起（-i = 读 rc，模拟登录 shell）
+zsh -f -c '[[ x =~ x ]] && echo REGEX_OK'   # H38：-f 不读 rc，测二进制里的 module_path
 ```
 
 **起不来就立刻撤**：`wtool uninstall shell/zsh`（撤掉的是那 3 条链，产物还在磁盘上）。
@@ -176,35 +182,53 @@ zsh -ic 'echo INTERACTIVE_OK'      # 交互式真能起（-i = 读 rc，模拟�
   引擎的契约写死了 `scripts/{build,install}.sh`（`wtool.sh` 的 `wt_project_script`），
   所以这条改不了，只能在 README 里说清楚：**别在大小写不敏感的盘上 clone 本仓**。
 
-### ⚠️ 模块路径：交互式一切正常，脚本里 `zmodload` 动态模块会失败
+### ✅ 模块路径：`zsh -f` / 脚本也能拿到模块（2026-10-26 起）
 
-zsh 把 `module_path`（`$WTOOL_HOME/usr/lib/zsh/5.9.2`）**编进了二进制**，而它
-**不从环境导入** —— `Src/params.c` 那条声明写着
-`IPDEF8("MODULE_PATH", …, PM_DONTIMPORT|PM_RESTRICTED|PM_TIED)`，注释是
-*"MODULE_PATH is not imported for security reasons"*（防止用环境变量注入恶意 `.so`）。
-**实测**：`MODULE_PATH=/p/usr/lib/zsh/5.9.2 zsh -c 'print -l $module_path'`
-打印的还是编译进去的 `/root/.wtool/usr/lib/zsh/5.9.2`。
+zsh 把 `--prefix` 编进二进制，`module_path` / `fpath` 的**初值**就是那个路径；
+而 `MODULE_PATH` **不允许从环境导入**（`Src/params.c` 的 `PM_DONTIMPORT`，注释
+*"MODULE_PATH is not imported for security reasons"*）。只靠 `.zshenv` / `env.zsh`
+修不了 `zsh -f`（`-f` 不读任何 rc）—— 这就是 H38。
 
-后果（在容器里逐条量过，`WTOOL_HOME=/fakehome` 挂的是真产物）：
+**现在的做法**（不是包装脚本，理由见下面）：构建期用 256 字节的占位前缀
+（`build/prefix-placeholder`）代替真实路径，安装期由 `scripts/lib/patch-prefix.py`
+在 ELF 的 NUL 字符串里就地替换成 `$WTOOL_HOME/usr`：
 
-| 场景 | 结果 |
-|---|---|
-| 交互式 shell（读 rc → `env.zsh`）：`zle` / `compinit` / `zmodload zsh/stat` | ✅ 全 OK |
-| 子进程 `zsh -c` 里 `autoload` 一个函数（靠 `env.zsh` 导出的 `FPATH`） | ✅ OK（`FPATH` 是**可以**从环境导入的） |
-| 子进程 `zsh -c` 里 `zmodload zsh/stat`（不读 rc） | ❌ `failed to load module … /root/.wtool/usr/…` |
-| **完全不读 rc 的 zsh**（`zsh -f` / 脚本）：`autoload -Uz compinit` | ❌ `compinit: function definition file not found`（我们的 functions 在 `$WTOOL_HOME/usr/share/zsh/…`，而编译进去的是构建时的路径） |
+* 替换时把「占位符 + `/lib/zsh/5.9.2` 这类后缀」当**一整段**缩，NUL 补在这段末尾；
+  直接 `replace(占位符, 目标)` 会把后缀截掉（实测过，模块路径会变成 `$WTOOL_HOME/usr/zsh/…`）。
+* sidecar 在 `__output/usr/lib/zsh/.zsh-wtool-patch`：记占位符、当前前缀、改过的文件。
+  重复 install 同一路径 **不重复打**；换 `$WTOOL_HOME` 再 install 会按 sidecar 再打一次；
+  `wtool uninstall` 会**还原成占位符**（产物回到可重定位状态）。
+* 判据（`scripts/install.sh` ④ 每次都跑，清了 `FPATH`/`ZDOTDIR` 测的是编译期路径）：
 
-⚠️ 最后那条有个**现实后果**：`wtool-base-tools/tests/contract_test.sh` 里
-「zsh 里 wtool 挂到了 _wtool」那一条就是拿 `zsh -f` 测的 —— **装过 shell/zsh 的机器上
-`zsh` 就是本项目这份**，于是它 `PASS 312 FAIL 1`（`run_all.sh` 会在这一组停下）；
-把系统 zsh 放前面（`PATH=/usr/bin:$PATH sh contract_test.sh`）就是 `PASS 313 FAIL 0`。
-两条都实测过。**这不是 shell/zsh 坏了，是"测试假设 PATH 上那个 zsh 自带 functions"**，
-引擎侧该修（`shell/zsh/BACKLOG.md` Z-11）。
+```sh
+zsh -f -c 'print -r -- $module_path[1]'          # → $WTOOL_HOME/usr/lib/zsh/<ver>
+zsh -f -c '[[ x =~ x ]] && echo REGEX_OK'        # → REGEX_OK（要真的匹配才返回 0！）
+zsh -f -c 'zmodload zsh/parameter && echo MOD_OK' # → MOD_OK
+zsh -f -c 'print -rl -- $fpath' | grep -Fx "$WTOOL_HOME/usr/share/zsh/<ver>/functions"
+```
 
-**为什么不干脆 `--disable-dynamic`（把模块全静态链进去，那样就没有路径问题）** ——
-量过了，**不划算**：zsh 有 **19 个只能动态构建的模块**（`Src/Modules/*.mdd` 里
-`link=dynamic`），静态构建会把它们**整个丢掉**，包括 `zsh/stat`、`zsh/system`、
-`zsh/zselect`、`zsh/files`、`zsh/mapfile`、`zsh/zpty`、`zsh/zprof`、`zsh/zftp`…
-实测静态产物 9.0 MB / 0 个 `.so`：体积是小了 2 MB，但**功能少了一批**。
-两害相权，保持动态构建 + 在 `env.zsh` 里现算路径。详见 `BACKLOG.md` Z-9。
+⚠️ 用户最初给的验收命令是 `[[ x =~ y ]] && echo REGEX_OK` —— **`x` 不匹配 `y`**，
+在正确的 zsh 上也是 rc=1、不打印 `REGEX_OK`。修好后的判据是「**stderr 为空** + rc=1」；
+要看到 `REGEX_OK` 必须写成 `[[ x =~ x ]]`（`install.sh` 用的是后者）。
 
+**为什么不选包装脚本**：包装器要在 exec 真身之前注入 `module_path`，但 `-c` 的代码不能
+拼字符串（引号/多行会坏），只能 `eval` / `source` 包一层 —— 实测 `$0`/参数/行号/`-x`
+轨迹都会变；而且**交互式 `zsh -f -i` 没有 `-c` 可注入**，`zsh -f -i` 里 `[[ x =~ x ]]`
+仍然失败；登录 shell 的 `argv[0]`（`-zsh`）经过 shebang 包装器后由内核换成脚本路径，
+包装器**没法知道**自己是登录 shell。二进制补丁保持原生二进制，这些语义全不变。
+
+**代价（明确写在这里）**：
+
+* 产物在 **install 之后与当时的 `$WTOOL_HOME` 绑定**（二进制里已经是那个绝对路径）。
+  **移动 `.wtool` 之后要重跑 `wtool install shell/zsh --force`**（sidecar 会再打）；
+  没重装就 `zsh -f` 会去旧路径找模块。
+* `$WTOOL_HOME/usr` 的**字节长度上限是占位符的 256 字节**；超了 `install.sh` 直接报错
+  （不会写坏二进制）。改占位符长度要同时改 `build/prefix-placeholder` 并重建。
+* 只改**本机选中的那个 target** 的产物；`__output` 下另外两个发行版仍是占位符，等它们
+  被选中安装时再打。`release.zip` / 整机包里带着 sidecar，目标机 install 会按自己的
+  `$WTOOL_HOME` 再打一次，所以**功能上打包不要求先卸载**。
+  ⚠️ 但 install 会改 `__output` 里的字节（二进制 + sidecar），**包内容就带上了本机的
+  `$WTOOL_HOME`** —— 要在意"两次打包逐字节相同"，打包前先 `wtool uninstall shell/zsh`
+  （或从干净 build 打包）让产物回到占位符。
+* `zsh` 只是**动态模块加载**修好了；`--disable-dynamic` 仍然不采用（会丢 19 个模块，见
+  `BACKLOG.md` Z-9 的历史记录）。

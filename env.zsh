@@ -27,9 +27,10 @@ export WTOOL_ZSH_DIR="$WTOOL_PROJECT_DIR"
 
 # 让 `zsh` 去读 `$WTOOL_HOME/.zshenv`（那里按 $WTOOL_HOME 现算 module_path/fpath）。
 #
-# 为什么必须：zsh 的 module_path/fpath 是**编译时前缀**（构建容器里的
-# /root/.wtool/usr/…），换机器就加载不到动态模块（zsh/zle、zsh/parameter…）；
-# MODULE_PATH 又不允许从环境导入 —— `.zshenv` 是**唯一**能修的位置（2026-10-21 VM 实测）。
+# 这条是**兜底层**：安装时 scripts/install.sh 已经把二进制里的编译期占位前缀换成
+# $WTOOL_HOME/usr（H38），所以 `zsh -f` / 脚本直接用编译进去的路径就能加载模块。
+# .zshenv 仍然有用：升级前装好的旧二进制、以及从 bash 起的交互式 zsh（ZDOTDIR 路）。
+# MODULE_PATH 不允许从环境导入，所以旧二进制只能靠它；新二进制不靠它也能工作。
 # 那份 .zshenv 读完会把 ZDOTDIR 还原成 $HOME，所以你的 ~/.zshrc 照旧生效。
 export ZDOTDIR="${ZDOTDIR:-$WTOOL_HOME}"
 
@@ -45,26 +46,22 @@ export ZDOTDIR="${ZDOTDIR:-$WTOOL_HOME}"
 # ---------------------------------------------------------------------------
 # 下面这一段是**这个项目独有**的（env.bash 里没有对应物，见那边的说明）：
 # zsh 把 `--prefix` 编进了二进制，`fpath` 与 `module_path` 的**初值**就是那个
-# 构建时的绝对路径（容器里是 /root/.wtool/usr）。本机的 $WTOOL_HOME 十有八九
-# 不是同一个串（默认 ~/.wtool = /home/<你>/.wtool），所以**必须现算**：
-#   · 不设 fpath        → compinit 之类的 autoload 一个都找不到（静默失败，最难查）
-#   · 不设 module_path  → `zmodload zsh/parameter` 之类去 /root/.wtool/usr/lib/zsh/… 找
-#                          .so，一个都加载不上（症状是"补全和行编辑像个残废 zsh"）
+# 构建时的占位前缀（install.sh 在安装时把它换成本机的 $WTOOL_HOME/usr，见 H38）。
+# 所以正常情况下 `zsh -f` / 脚本也已经能加载模块；这里**仍然**再设一遍，是兜底：
+#   · 升级前装好的旧二进制（还没有二进制补丁）；
+#   · 从 bash 起的交互式 zsh（ZDOTDIR 路）—— 双保险。
 # 两个都用 $WTOOL_HOME 拼，**绝不写死构建路径**；$ZSH_VERSION 是当前这份 zsh 的
 # 版本目录名（5.9.2），目录不存在时 zsh 自己会忽略这一项。
 #
-# ⚠️ **改不了"从外面设"这条路，只能在这儿设**（实测 + 源码）：zsh 的 MODULE_PATH
+# ⚠️ **为什么不能只靠环境变量**（实测 + 源码）：zsh 的 MODULE_PATH
 #    **不从环境导入** —— Src/params.c 那条声明写着
 #    `IPDEF8("MODULE_PATH", …, PM_DONTIMPORT|PM_RESTRICTED|PM_TIED)`，
 #    注释是 "MODULE_PATH is not imported for security reasons"（防止用环境变量注入
 #    恶意 .so）。实测 `MODULE_PATH=… zsh -c 'print -l $module_path'` 打印的仍然是
-#    编译进去的那个路径。所以：
-#      · **交互式 shell**（读 rc → 读到本文件）：一切正常 ✅
-#      · `zsh -c` / 脚本（**不读 rc**）：`zmodload` 一个**动态**模块会失败
-#        （`fpath` 那条已经用 `export FPATH` 补上了，模块这条补不了）。
-#        这是已知限制，见 README「已知限制」与 BACKLOG Z-9 —— 那里也记了
-#        "为什么不干脆 `--disable-dynamic`"（实测：会**丢掉 19 个只能动态构建的模块**，
-#        包括 `zsh/stat`、`zsh/system`、`zsh/zselect`、`zsh/files`…）。
+#    编译进去的路径。所以旧二进制只能靠 rc / .zshenv；**新二进制靠安装期补丁**。
+#    这也是为什么 `zsh -f` 在**旧**产物上拿不到动态模块 —— 但新产物已经没有这个问题。
+#
+# ⚠️ 重复 prepend 不会坏事（zsh 会按顺序找，找到第一个就用）；别为了"去重"把这段删掉。
 if [ -n "${ZSH_VERSION:-}" ]; then
     fpath=("$WTOOL_HOME/usr/share/zsh/site-functions"
            "$WTOOL_HOME/usr/share/zsh/$ZSH_VERSION/functions" $fpath)
@@ -72,7 +69,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
     # FPATH **可以**从环境导入（Src/params.c: `IPDEF8("FPATH", &fpath, "fpath", PM_TIED)`，
     # 没有 PM_DONTIMPORT）—— 实测 `FPATH=… zsh -c 'print -l $fpath[1]'` 认。
     # 所以导出去：**子进程 / 不读 rc 的 `zsh -c` 脚本**也能 autoload 到这套 functions，
-    # 否则它们用的是编译进去的 `/root/.wtool/usr/share/zsh/…`（不存在的路径）。
+    # 否则它们用的是编译进去的**旧构建前缀**（目标机上不存在的路径）。
     # MODULE_PATH 就没这个待遇（见上面那段），所以只导 fpath。
     export FPATH
 fi

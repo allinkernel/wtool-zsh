@@ -22,8 +22,10 @@
 | `build/targets.tsv` | 三个目标系统 → 基础镜像 / 代号 / glibc。**加一个发行版 = 加一行** |
 | `build/layers.tsv` | 层清单（一层 `main`），容器里跑 `scripts/build.sh --in-docker` |
 | `build/export.filter` | 导出过滤；今天是空的（理由写在文件里） |
-| `scripts/build.sh` | 双模式：`--in-docker`（引擎用）/ 不给参数（宿主上一条命令做完） |
-| `scripts/install.sh` | 引擎在 `wtool install` 时跑；职责是**验收**（选中的那套必须是本机的、能跑） |
+| `build/prefix-placeholder` | 编进二进制的**256 字节占位前缀**（H38）。build.sh / install.sh 共用；改它要重建三套 |
+| `scripts/build.sh` | 双模式：`--in-docker`（引擎用，按占位前缀编）/ 不给参数（宿主上一条命令做完） |
+| `scripts/install.sh` | 引擎在 `wtool install` 时跑：① 把占位前缀换成 `$WTOOL_HOME/usr`（调 `scripts/lib/patch-prefix.py`）② 验收选中那套/模块/共享库 |
+| `scripts/lib/patch-prefix.py` | 安装期 ELF/文本前缀补丁；sidecar 支持重复安装、换路径、`--uninstall` 还原 |
 | `env.zsh` / `env.bash` | shell 集成，两份**逐字等价**（差异只有 shell 名 + bash 没有 fpath 那一段） |
 | `README.md` | **给用户的完整说明书**：为什么要三套、怎么选、怎么编、怎么验 |
 | `architecture.md` | 这个项目**现在长什么样** |
@@ -49,9 +51,10 @@
    产物只落 `/root/.wtool/usr`；引擎按 `root/.wtool/*` 导出。往里写会静默失败
    （只读）或者污染产物。
 6. **装完必须自己验**（别只信 `wtool install` 的最后一行）：
-   `zsh --version` + `zsh -ic 'echo INTERACTIVE_OK'`。装错了就先
-   `wtool uninstall shell/zsh` —— `$WTOOL_HOME/usr/bin` 在 `PATH` 最前，
-   错的 zsh 就是你**下一个登录 shell**。
+   `zsh --version` + `zsh -ic 'echo INTERACTIVE_OK'` +
+   **`zsh -f -c '[[ x =~ x ]] && echo REGEX_OK'`**（H38：`-f` 不读 rc，测的是二进制里的
+   module_path）。装错了就先 `wtool uninstall shell/zsh` —— `$WTOOL_HOME/usr/bin` 在
+   `PATH` 最前，错的 zsh 就是你**下一个登录 shell**。
 7. **改任何东西之后跑一遍**（见 `architecture.md` §5 的判据）：
    `sh -n scripts/*.sh`、`wtool validate shell/zsh`、
    `cd ../../wtool-base-tools/tests && sh run_all.sh`。

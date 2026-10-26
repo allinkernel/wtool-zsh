@@ -29,10 +29,11 @@
   <!-- shell 集成：内容被汇总进 $WTOOL_HOME/env.zsh / env.bash，
        你的 rc 里只有那两行（export WTOOL_HOME + source …/env.{zsh,bash}）。
 
-       ‼️ priority=1（**根元素上那个**）= 这个项目的 env 块**抢在所有人前面加载**，
-       这不是洁癖：zsh 把 module_path 编进了二进制，而这个仓库的产物装在
-       $WTOOL_HOME 下（编译时那个前缀在目标机上不存在）—— 只有本文件能把
-       fpath / module_path 改成对的。**谁在它之前 zmodload/autoload，谁就失败**：
+       ‼️ priority=1（**根元素上那个**）= 这个项目的 env 块**抢在所有人前面加载**。
+       **2026-10-26 起**新产物由 scripts/install.sh 的二进制补丁改好 module_path，
+       不再依赖这块；但**升级前的旧二进制**、整机包里还没重装的那份仍靠它 ——
+       所以 priority=1 保留，别改回去。旧产物的症状（谁在它之前 zmodload/autoload，
+       谁就失败）：
        实测 `wtool-base-tools` 那个工具块（priority 5）里的 completion/wtool.zsh
        会 `zmodload zsh/parameter`，oh-my-zsh（10）会 compinit —— 都排在
        priority 20 的项目块前面，于是整个登录 shell 刷一屏

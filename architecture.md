@@ -62,20 +62,25 @@ wtool build shell/zsh
        │     sh /proj/scripts/build.sh --in-docker --target={target}
        │       ① apt 换 http 源 → 装 build-essential/autoconf/libncurses-dev/xz-utils
        │       ② 源码 /proj → /src（排除 .git/__output/__layer/__release）
-       │       ③ Util/preconfig（autoconf + autoheader）→ ./configure --prefix=/root/.wtool/usr
-       │       ④ make -j → make install.bin install.modules install.fns
-       │       ⑤ 容器里自检：zsh --version / ldd / glibc 门槛 / 体积
+       │       ③ Util/preconfig（autoconf + autoheader）
+       │          → ./configure --prefix=$(cat build/prefix-placeholder)
+       │       ④ make -j → make install.bin install.modules install.fns（装到占位前缀）
+       │          → 把占位树搬到 /root/.wtool/usr（二进制里仍是占位前缀）
+       │       ⑤ 容器里自检：占位前缀在不在 / module_path[1] / zsh --version / ldd / glibc
        ├─ docker commit → docker save | tar -x → __layer/<target>/（OCI）
        └─ 导成 __output/<target>/main/{payload,OWNED.tsv}（过 build/export.filter，丢白障）
 sh scripts/build.sh          # 宿主上再跑一次（引擎编层 + 别名链 + 选本机那套 + 自检）
-wtool install shell/zsh      # 引擎建 L1/L2 + env 块；然后跑 scripts/install.sh 验收
+wtool install shell/zsh      # 引擎建 L1/L2 + env 块；然后跑 scripts/install.sh
+                             #   ① 验收发行版/共享库
+                             #   ② scripts/lib/patch-prefix.py：占位前缀 → $WTOOL_HOME/usr
+                             #   ③ 验收 zsh -f 的 module_path / regex / zmodload / fpath
 ```
 
 **三个 configure 开关的理由**（`--disable-cap` 是硬需求，另外两个是防默认值漂移）：
 
 | 开关 | 实测理由 |
 |---|---|
-| `--prefix=/root/.wtool/usr` | 容器里 `/root` 就是 `$HOME` → 产物形状 = "换台机器就是 `~/.wtool/usr`" |
+| `--prefix=$(cat build/prefix-placeholder)` | **占位前缀**（256 字节，多级目录）：安装期由 `scripts/lib/patch-prefix.py` 缩成真实 `$WTOOL_HOME/usr`。`make install` 之后再把占位树搬进 `/root/.wtool/usr`，所以引擎看到的形状还是"换台机器就是 `~/.wtool/usr`" |
 | `--disable-cap` | 否则硬依赖 `libcap.so.2`；**实测 26.04（resolute）基础镜像里没有这个库**，22.04/24.04 有 |
 | `--disable-gdbm` / `--disable-pcre` | 默认本来就 off，写出来是防止默认值哪天变了 |
 
@@ -103,6 +108,10 @@ __output/usr -> ubuntu_<本机>/usr -> main/payload/usr        （两级，都�
 * **为什么要在 install.sh 里拦**：`$WTOOL_HOME/usr/bin` 排在 `PATH` 最前，
   装错的那一份就是用户**下一个登录 shell**；而 L2 链是引擎在跑 `install.sh` **之前**
   就建好的（`harness/architecture.md` §4.2），所以"检查"没法更早，但"失败要响"必须在这儿响。
+* **install.sh 还负责打二进制路径补丁**（H38）：把选中那套 `__output/usr` 里所有含
+  占位前缀的文件改成 `$WTOOL_HOME/usr`。ELF（`bin/zsh`、`newuser.so`）按 NUL 字符串
+  整段缩、末尾补 NUL；文本（`_run-help`/`run-help`）直接替换。sidecar 落在
+  `__output/usr/lib/zsh/.zsh-wtool-patch`，`--uninstall` 用它还原成占位符。
 
 ## 5. 现在能验到什么程度（判据，2026-10-14 实测）
 
@@ -113,11 +122,13 @@ __output/usr -> ubuntu_<本机>/usr -> main/payload/usr        （两级，都�
 | 二进制不依赖 libcap | `ldd …/bin/zsh` | 只有 `libtinfo.so.6 libm.so.6 libc.so.6`（+ vdso/ld） |
 | 跨发行版起不来（三套的理由） | 把 24.04 那份拿到 `ubuntu:22.04` 容器里跑 | ❌ `version 'GLIBC_2.38' not found` |
 | 装完之后交互式能起 | `zsh -ic 'echo INTERACTIVE_OK'` | ✅ 只有 `INTERACTIVE_OK`（+ rc 自己那 4 行 `can't change option: zle`，**系统 zsh 同样有**，不是本项目引入的） |
+| **`zsh -f` 能加载动态模块**（H38） | `env -u FPATH zsh -f -c '[[ x =~ x ]] && echo REGEX_OK'` / `zmodload zsh/parameter` | ✅ `REGEX_OK` / `MOD_OK`，stderr 空（2026-10-26 VM 实测；旧产物是 `failed to load module zsh/regex` + rc=2） |
+| **`zsh -f` 的 fpath 是真实前缀** | `env -u FPATH zsh -f -c 'print -rl -- $fpath' \| grep -Fx "$WTOOL_HOME/usr/share/zsh/$ZSH_VERSION/functions"` | ✅ 在（旧产物是构建时占位路径） |
 | 登录 / 嵌套 shell | `zsh -lic 'echo OK'` / `zsh -ic 'zsh -ic "echo OK"'` | ✅ 都过 |
 | 补全系统真能用 | `zsh -ic 'autofile… compinit -u; zstyle …'` | ✅ `COMPINIT_OK` + `ZSTYLE_OK` |
 | 清单合法 | `wtool validate shell/zsh` | rc=0 |
 | 装完账目干净 | `wtool check` | rc=0「一切对得上」 |
-| 引擎回归没被带坏 | `cd wtool-base-tools/tests && sh run_all.sh` | 13 组全绿 |
+| 引擎回归没被带坏 | `cd wtool-base-tools/tests && sh run_all.sh` | 2026-10-26：**12/13 组绿**（release_test 1 条既有红，见 `BACKLOG.md`；契约 311/0） |
 
 **env 块的加载顺序是判据的一部分**（不是细节）：
 
@@ -126,21 +137,27 @@ grep -n '^# --- wtool:' "$WTOOL_HOME/env.zsh" | head -2   # 第一块必须是 w
 zsh -ic 'echo ok' 2>&1 | wc -l                            # 5（= 1 行 ok + rc 自己那 4 行）
 ```
 
-排在别人后面会怎样（实测）：整屏
+排在别人后面会怎样（旧产物实测）：整屏
 `failed to load module 'zsh/parameter': /root/.wtool/usr/lib/zsh/5.9.2/zsh/parameter.so`
-—— 因为 `module_path` 只有本文件能改对，而工具块（priority 5）与 oh-my-zsh（10）
-在它之前就 `zmodload` / `compinit` 了。
+—— 旧二进制的 `module_path` 只有 `env.zsh` 能改对，而工具块（priority 5）与
+oh-my-zsh（10）在它之前就 `zmodload` / `compinit` 了。**新产物由安装期二进制补丁
+保证编译期路径正确**，不依赖这一块；但升级前的旧二进制、以及整机包里还没重装的
+那份仍靠它，所以 priority=1 保留，别改回去。
 
 
 ## 6. 不知道 / 没做的
 
-* **`zsh -c` / 脚本里的 `zmodload`（动态模块）会失败** —— 交互式 shell 一切正常。
-  根因在 `Src/params.c`：`module_path` 的初值是**编进二进制的**绝对路径，而
-  `MODULE_PATH` 这条环境变量 zsh **故意不导入**（`PM_DONTIMPORT`，注释写着
-  "not imported for security reasons"）→ 除了"读 rc 的 shell"（= `env.zsh` 生效的那个），
-  别的 zsh 进程改不动它。`fpath` 不受这条限制（`FPATH` 能导入），所以 `env.zsh`
-  里 `export FPATH` 让子进程/脚本的 autoload 正常。详见 README「模块路径」与 BACKLOG Z-9。
-  **`--disable-dynamic` 量过了，不采用**：会丢掉 19 个 `link=dynamic` 的模块。
+* **产物在 install 之后绑定当时的 `$WTOOL_HOME`**（2026-10-26 起）：二进制里的
+  `module_path`/`fpath` 是安装期写死的绝对路径。移动 `.wtool` 后必须重跑
+  `wtool install shell/zsh --force`（sidecar 会按新路径再打）；否则 `zsh -f` 会去旧路径找
+  模块。`--uninstall` 会把二进制还原成占位前缀（可重定位状态），所以打包不要求先卸载。
+* **`$WTOOL_HOME/usr` 最长 256 字节**（占位前缀长度）。超了 `install.sh` 直接报错；
+  要支持更长路径就改 `build/prefix-placeholder` 并重建三套产物。
+* **只给 Ubuntu 22.04/24.04/26.04 编**；别的发行版要加 `build/targets.tsv` 一行并改
+  `build.sh` 的 apt 段。
+* **`--disable-dynamic` 不采用**：会丢掉 19 个 `link=dynamic` 的模块（`zsh/stat` / `zsh/system`
+  / `zsh/zselect` / `zsh/files` / `zsh/mapfile` / `zsh/zpty` / `zsh/zprof` / `zsh/zftp`…）。
+  现在的修法是"安装期改二进制路径"，不是静态链模块。
 * **`download-release` + `unpack-release` 那条路没有端到端验过**：`release.zip` 的
   对照表（`scripts/release.json`）还没写，换台机器解完**还得选一次发行版**。
   发布侧属于别的块，见 `BACKLOG.md`。

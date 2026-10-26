@@ -67,6 +67,49 @@ __output/usr          -> <本机发行版>/usr             ← **选择链**，w
    本项目用选择链绕过，代价是"选错不会在 install 之前报错" →
    由 `scripts/install.sh` 兜住（核对发行版 + 真跑一次 + `ldd`）。
 
+## ✅ 已完成：H38 —— `zsh -f` 拿不到动态模块（2026-10-26）
+
+**做法**：构建期用 256 字节占位前缀（`build/prefix-placeholder`）编译，安装期由
+`scripts/lib/patch-prefix.py` 把选中那套产物里的占位前缀就地换成真实的
+`$WTOOL_HOME/usr`。ELF 按「占位符 + 后缀」整段缩、NUL 补在末尾；sidecar
+`lib/zsh/.zsh-wtool-patch` 支持重复安装/换路径/卸载还原。
+
+**包装脚本路线实测否决**：`-c` 只能 `eval`/`source` 包一层（`$0`/参数/行号/`-x` 轨迹变），
+交互式 `zsh -f -i` 没有 `-c` 可注入（`[[ x =~ x ]]` 仍报模块错误），登录 shell 的
+`argv[0]`（`-zsh`）经过 shebang 包装器后丢失。详见 README「为什么不选包装脚本」与 H38。
+
+**判据（VM `mindul@192.168.76.136`，`/tmp/zsh-accept` 干净家目录，2026-10-26 实测）**：
+
+| 命令 | 结果 |
+|---|---|
+| `zsh -f -c '[[ x =~ x ]] && echo REGEX_OK'` | `REGEX_OK`，rc=0 |
+| `zsh -f -c '[[ x =~ y ]] && echo REGEX_OK'` | stderr 空、rc=1（**x 不匹配 y**；原始期望 REGEX_OK 写错了） |
+| `zsh -f -c 'zmodload zsh/parameter && echo MOD_OK'` | `MOD_OK`，rc=0 |
+| `zsh -c 'echo $module_path[1]'` | `/tmp/zsh-accept/.wtool/usr/lib/zsh/5.9.2` |
+| `zsh -ic 'echo IC_OK; bindkey "^[[A"'`（非 tty + PTY） | `IC_OK` + `"^[[A" up-line-or-history`，rc=0 |
+| `sh -c 'command -v zsh; zsh --version'` | `/tmp/zsh-accept/.wtool/usr/bin/zsh` + `zsh 5.9.2` |
+| `zsh -f -i` 里 `[[ x =~ x ]]`（PTY） | `IREGEX_OK`，rc=0 |
+| `zsh -f -c 'print -rl -- $fpath' \| grep -Fx …/functions` | 命中 |
+| `zsh -c 'kill -TERM $$'` | rc=143 |
+| `zsh -l -c 'echo $options[login] $0'` | `on zsh`，rc=0 |
+| 脚本文件 / `#!/…/zsh` shebang | `$0`/参数正确，`SCRIPT_REGEX_OK` / `SHEBANG_REGEX_OK` |
+
+**回归（2026-10-26 本轮实测）**：
+
+- 上游 zsh 测试（在 `/tmp` 的构建树跑 `make -C Test TESTNUM=<组> check`）：
+  A **8/8**、B **13/13**、C **5/5**、D **9/9**、E **3/3**，0 失败。
+- `tools/git-repo-sh-tools/tests/run_tests.sh`：**630 通过 / 0 失败**。
+- `wtool-base-tools/tests/run_all.sh`：**12/13 组绿** —— pairing 60、provision 40、
+  publish 219、table 111、release-copy 17、layer 50、docker 102、install-env 67、
+  installer 93、export 78、muslbin 121、contract 311（全 0 失败）。
+  **`release_test` 184/1**：唯一红是**既有**问题（和本改动无关）——测试夹具在坏包里
+  放了绝对软链 `/nonexistent`，Python 3.12 的 `tarfile` 先抛 `AbsoluteLinkError`，
+  没走到「坏包里有 `.wtool/usr`」那条断言。建议把夹具改成相对链（引擎侧一行）。
+  `run_all.sh` 会停在 release_test，所以后面 7 组是**单独**跑的（上面的数字）。
+
+**代价**：产物 install 后与 `$WTOOL_HOME` 绑定（移动要重装）；目标前缀 ≤256 字节；
+只改本机选中的 target。见 README §6 / `architecture.md` §6。
+
 ---
 
 ## 待做 / 待决定
@@ -81,9 +124,10 @@ __output/usr          -> <本机发行版>/usr             ← **选择链**，w
 | Z-6 | **加别的发行版**（Debian / Fedora / Alpine） | `build/targets.tsv` 加一行就多一个目标，但 `scripts/build.sh` 的 apt 那一段是 Ubuntu 专有的（换源 + 包名） | 未做 |
 | Z-7 | **上游 `Scripts/` vs 我们的 `scripts/`** | 大小写不敏感的文件系统上会撞（macOS/Windows）。引擎契约写死了 `scripts/`，改不了 → 只能在 README 里说清楚 | 已知限制 |
 | Z-8 | **`--enable-cap` 到底要不要** | 今天统一 `--disable-cap`（26.04 没有 libcap.so.2）。代价是 `zsh/cap` 模块不可用 —— 日常没人用 | 已知取舍 |
-| Z-9 | **`zsh -c` / 脚本里 `zmodload` 动态模块会失败**（交互式正常） | 根因：`module_path` 被**编进二进制**，而 `MODULE_PATH` **不从环境导入**（`Src/params.c` 的 `PM_DONTIMPORT`，安全设计）→ 只有"读 rc 的 shell"（就是 `env.zsh`）能改对它。**`fpath` 那条已经用 `export FPATH` 补上了**（FPATH 可以从环境导入），模块这条补不了。<br>**量过 `--disable-dynamic`（静态链模块），不划算**：zsh 有 **19 个 `link=dynamic` 的模块**会被整个丢掉 —— `zsh/stat`、`zsh/system`、`zsh/zselect`、`zsh/files`、`zsh/mapfile`、`zsh/zpty`、`zsh/zprof`、`zsh/zftp` …（`grep -l '^link=dynamic' Src/Modules/*.mdd Src/Zle/*.mdd`）。静态产物 9.0 MB / 0 个 `.so`（今天 11 MB / 36 个），小 2 MB 但少一批功能 | **已知限制**（要让脚本也能加载模块，正路是"装到固定绝对路径"，或者用户自己在脚本里先设 `module_path`） |
+| Z-9 | ~~**`zsh -c` / 脚本里 `zmodload` 动态模块会失败**（交互式正常）~~ **✅ 已修（2026-10-26，安装期二进制补丁；见上面 H38 节）** | 根因：`module_path` 被**编进二进制**，而 `MODULE_PATH` **不从环境导入**（`Src/params.c` 的 `PM_DONTIMPORT`，安全设计）→ 只有"读 rc 的 shell"（就是 `env.zsh`）能改对它。**`fpath` 那条已经用 `export FPATH` 补上了**（FPATH 可以从环境导入）；模块这条在旧产物上补不了 —— 2026-10-26 改成安装期二进制补丁后已修。<br>**量过 `--disable-dynamic`（静态链模块），不划算**：zsh 有 **19 个 `link=dynamic` 的模块**会被整个丢掉 —— `zsh/stat`、`zsh/system`、`zsh/zselect`、`zsh/files`、`zsh/mapfile`、`zsh/zpty`、`zsh/zprof`、`zsh/zftp` …（`grep -l '^link=dynamic' Src/Modules/*.mdd Src/Zle/*.mdd`）。静态产物 9.0 MB / 0 个 `.so`（今天 11 MB / 36 个），小 2 MB 但少一批功能 | **✅ 已修**（`zsh -f` / 脚本都行；`--disable-dynamic` 仍不采用） |
 | Z-10 | **引擎侧：`<zshrc priority=…>` 被解析但不参与排序** | 实测：把 `<zshrc priority="1"/>` 写进 `wtool.xml`、重装 —— 汇总的 `$WTOOL_HOME/env.zsh` 里那一块还是 `prio=20`。原因在 `wtool_plan.py` 的 `collect_env_blocks()`：它排序读的是 **`var/<项目>/meta.tsv` 的 `priority`**，而那条来自**根元素**；`render_block(...)` 也是拿 `meta["priority"]`。所以**只有根元素的 priority 能调 env 块的顺序**。<br>本项目因此把**根元素**改成 `priority="1"`（env 块必须第一个加载，理由见 `wtool.xml` 的注释）。⚠️ 副作用：这个项目的 **bootstrap 顺序**也跟着变成第一 —— 本项目不依赖别人，可以接受，但这是"为了 env 顺序牺牲了项目顺序"，引擎修好之后应该改回来 | **引擎侧待修**（改 `collect_env_blocks`/`render_block` 用 env 条目的 priority；不属本块） |
-| Z-11 | **不读 rc 的 zsh 找不到自己的 functions** —— 连带把 `wtool-base-tools/tests/contract_test.sh` 弄红 | 同一个根因的另一个症状（Z-9 是模块，这是 fpath）：`zsh -f` / `zsh -c`（不读 rc）的 `fpath` 是**编进二进制的** `/root/.wtool/usr/share/zsh/…`（目标机上不存在），而**系统 zsh 的** `/usr/share/zsh/functions` 又不在我们的编译默认里 → `autoload -Uz compinit` 失败（`compinit: function definition file not found`）→ `compdef` 不存在 → 补全注册不上。<br>**为什么值得单独记**：`wtool-base-tools/tests/contract_test.sh` 的「zsh 里 wtool 挂到了 _wtool」那一条就是 `zsh -f -c '…; print ${_comps[wtool]}'`。**装过 shell/zsh 的机器上，`zsh` 就是本项目这份**，于是：<br>`sh contract_test.sh` → `PASS 312 FAIL 1`（`run_all.sh` **在这一组就停了**）<br>`PATH=/usr/bin:$PATH sh contract_test.sh` → `PASS 313 FAIL 0`<br>（两条都实测过。**交互式 shell 不受影响**：rc → env.zsh 会把 fpath 设对，`zsh -ic 'compinit'` 实测 OK。） | **引擎侧待修**（测试里显式给 `fpath`，别指望 PATH 上那个 `zsh` 在 `-f` 下自带 functions）；可选的正路是 `sudo-install` 往系统 `site-functions` 放一条链（要用户点头，见 Z-12） |
+| Z-11 | ~~**不读 rc 的 zsh 找不到自己的 functions**~~ **✅ 已修（2026-10-26，同一个二进制补丁把 fpath 也改对；见上面 H38 节）** —— 连带把 `wtool-base-tools/tests/contract_test.sh` 弄红 | 同一个根因的另一个症状（Z-9 是模块，这是 fpath）：`zsh -f` / `zsh -c`（不读 rc）的 `fpath` 是**编进二进制的** `/root/.wtool/usr/share/zsh/…`（目标机上不存在），而**系统 zsh 的** `/usr/share/zsh/functions` 又不在我们的编译默认里 → `autoload -Uz compinit` 失败（`compinit: function definition file not found`）→ `compdef` 不存在 → 补全注册不上。<br>**为什么值得单独记**：`wtool-base-tools/tests/contract_test.sh` 的「zsh 里 wtool 挂到了 _wtool」那一条就是 `zsh -f -c '…; print ${_comps[wtool]}'`。**装过 shell/zsh 的机器上，`zsh` 就是本项目这份**，于是：<br>`sh contract_test.sh` → `PASS 312 FAIL 1`（`run_all.sh` **在这一组就停了**）<br>`PATH=/usr/bin:$PATH sh contract_test.sh` → `PASS 313 FAIL 0`<br>（两条都实测过。**交互式 shell 不受影响**：rc → env.zsh 会把 fpath 设对，`zsh -ic 'compinit'` 实测 OK。） | **✅ 已修**（补丁后 `zsh -f` 的 fpath 直接指向 `$WTOOL_HOME/usr/share/zsh/<ver>/functions`；引擎侧测试仍建议显式给 fpath，见 Z-12） |
+| Z-13 | **产物 install 后与 `$WTOOL_HOME` 绑定** | `module_path`/`fpath` 是安装期写死的绝对路径；移动 `.wtool` 要 `wtool install shell/zsh --force`（sidecar 会再打）；`--uninstall` 会还原成占位符。`$WTOOL_HOME/usr` 最长 256 字节 | **已知取舍**（H38 的代价；不是 bug） |
 | Z-12 | **要不要用系统层把 functions 挂到 `/usr/local/share/zsh/site-functions`** | 那个路径**在我们编译进去的 fpath 里**（zsh 的默认 `sitefndir`）—— 往里放一条指向 `$WTOOL_HOME/usr/share/zsh/$ver/functions` 的链，`-f` / 脚本里的 autoload 就都能用了。代价：要 root（`wtool sudo-install`）、而且是**系统级**改动（换 WTOOL_HOME 要重放） | 待决定 |
 
 

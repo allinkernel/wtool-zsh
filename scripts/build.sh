@@ -5,7 +5,11 @@
 #
 #   ① 容器里（引擎驱动，`build/layers.tsv` 那一行就是它）：
 #        sh /proj/scripts/build.sh --in-docker --target=ubuntu_24.04
-#      装依赖 → 编 → `make install` 到 /root/.wtool/usr（**影子 $HOME** 的形状）。
+#      装依赖 → 编 → `make install` 到 build/prefix-placeholder 里的**占位前缀**，
+#      再把那棵树搬到 /root/.wtool/usr（**影子 $HOME** 的形状）。
+#      ⚠️ 编进二进制的是占位前缀（不是 /root/.wtool/usr）：目标机上 install.sh 把它
+#         就地换成真实的 $WTOOL_HOME/usr（H38 的修法）。占位前缀够长，换短路径时
+#         用 NUL 补齐；改它之前先读 build/prefix-placeholder 的注释。
 #      引擎随后把容器里 `root/.wtool/*` 导成
 #          __output/<target>/<层>/payload/usr/{bin,lib,share}
 #      （见 harness/architecture.md §4 的"引擎对每一层做四件事"）。
@@ -34,6 +38,27 @@ set -eu
 # ── 影子 $HOME 的形状（引擎的约定，别改）────────────────────────────────
 # `wt_layer_export` 只取容器里 `root/.wtool/*` 并剥掉两节 → payload 相对 $WTOOL_HOME。
 PREFIX=/root/.wtool/usr
+
+# 编进二进制的占位前缀（长这样：/w/zsh-placeholder-000…/…/usr）。
+# **必须比目标机上的 $WTOOL_HOME/usr 长**：安装期就地替换，短了装不下。
+# 长度和分节在 build/prefix-placeholder 里（一份，build.sh / install.sh 共用）。
+placeholder_file() { printf '%s/build/prefix-placeholder\n' "$PROJ"; }
+
+read_placeholder() {
+    _pf=$(placeholder_file)
+    [ -f "$_pf" ] || die "缺占位前缀文件：$_pf"
+    _ph=$(sed -n '1p' "$_pf")
+    [ -n "$_ph" ] || die "$_pf 是空的"
+    case $_ph in
+        /*) ;;
+        *) die "$_pf 必须是绝对路径（现在是：$_ph）" ;;
+    esac
+    _ph_len=${#_ph}
+    [ "$_ph_len" -ge 64 ] || die "$_pf 太短（${_ph_len} 字节）—— 目标机的 \$WTOOL_HOME/usr 可能更长"
+    _ph_max=$(printf '%s\n' "$_ph" | awk -F/ '{ for (i=1;i<=NF;i++) if (length($i)>m) m=length($i) } END{ print m+0 }')
+    [ "$_ph_max" -le 255 ] || die "$_pf 有超过 255 字节的路径分量（$_ph_max）—— Linux 建不了这个目录"
+    printf '%s\n' "$_ph"
+}
 
 # 换 apt 源用的镜像（http！https 要 CA，基础镜像里没有）。
 MIRROR=${ZSH_BUILD_MIRROR:-mirrors.ustc.edu.cn}
@@ -102,7 +127,8 @@ apt_prepare() {
 
 in_docker() {   # <target>
     _t=$1
-    log "target=$_t  prefix=$PREFIX"
+    _ph=$(read_placeholder)
+    log "target=$_t  最终 prefix=$PREFIX  编译期占位=$_ph"
 
     apt_prepare
 
@@ -129,8 +155,8 @@ in_docker() {   # <target>
         ./Util/preconfig >/tmp/zsh-preconfig.log 2>&1 \
             || { tail -20 /tmp/zsh-preconfig.log >&2; die "Util/preconfig 失败（日志 /tmp/zsh-preconfig.log）"; }
     fi
-    log "configure --prefix=$PREFIX"
-    ./configure --prefix="$PREFIX" --disable-cap --disable-gdbm --disable-pcre >/tmp/zsh-configure.log 2>&1 \
+    log "configure --prefix=$_ph（占位符 —— 安装期再换成真实路径）"
+    ./configure --prefix="$_ph" --disable-cap --disable-gdbm --disable-pcre >/tmp/zsh-configure.log 2>&1 \
         || { tail -30 /tmp/zsh-configure.log >&2; die "configure 失败（日志 /tmp/zsh-configure.log）"; }
 
     log "make -j$(nproc)"
@@ -144,17 +170,34 @@ in_docker() {   # <target>
     #      的：`<export_usr>` 会把 `share/man` 也当成一个条目导出去，于是
     #      `$WTOOL_HOME/usr/share/man` 整条变成我们这个项目的链，**盖住别人**。
     #      宁可不要 man（要 `man zsh` 就用系统装的那个 zsh 的 man，或者 `zsh -c 'help x'`）。
-    log "make install.bin install.modules install.fns（不带 man —— 见脚本里的说明）"
+    log "make install.bin install.modules install.fns（不带 man —— 见脚本里的说明；装到 $_ph）"
     make install.bin install.modules install.fns >/tmp/zsh-install.log 2>&1 \
         || { tail -30 /tmp/zsh-install.log >&2; die "make install 失败（/tmp/zsh-install.log）"; }
 
     # 防御：`Doc/install.man` 失败前可能已经 mkdir 了空的 share/man/man1。
     # 空目录一样会被 <export_usr> 当成一个 part 条目导出去（上面第 ② 条）。
-    rm -rf -- "$PREFIX/share/man"
+    rm -rf -- "$_ph/share/man"
+
+    # 把装到占位前缀的树搬进容器里的影子 $HOME 形状。二进制里**仍然是占位前缀**
+    # （这正是 install.sh 要替换的那串；搬动目录不会改二进制内容）。
+    [ -d "$_ph" ] || die "make install 之后 $_ph 不在"
+    [ ! -e "$PREFIX" ] || die "$PREFIX 已经存在（容器不干净？）—— 不敢覆盖"
+    mkdir -p -- "$(dirname -- "$PREFIX")"
+    mv -- "$_ph" "$PREFIX"
+    rm -rf -- /w/zsh-placeholder-*
+    log "已把占位树搬到 $PREFIX（容器里；二进制的编译期前缀仍是占位符）"
 
     # 编出来的东西在这个容器里立刻验一次 —— 起不来要在这里就报，
     # 别等装到别人的机器上才发现。
     [ -x "$PREFIX/bin/zsh" ] || die "$PREFIX/bin/zsh 没生成"
+    grep -aF -- "$_ph" "$PREFIX/bin/zsh" >/dev/null 2>&1 \
+        || die "$PREFIX/bin/zsh 里找不到占位前缀 $_ph —— configure 没按占位符编？"
+    _mp=$("$PREFIX/bin/zsh" -f -c 'print -r -- $module_path[1]' 2>/dev/null || true)
+    case $_mp in
+        "$_ph"/*) ;;
+        *) die "zsh 的 module_path[1] = '$_mp'，不是占位前缀 '$_ph/…' —— 产物形状不对" ;;
+    esac
+    log "占位自检：module_path[1] = $_mp"
     log "容器里自检：$("$PREFIX/bin/zsh" --version)"
     log "运行时依赖：$(ldd "$PREFIX/bin/zsh" | awk '{print $1}' | paste -sd' ' -)"
     log "glibc 门槛：$(objdump -p "$PREFIX/bin/zsh" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"

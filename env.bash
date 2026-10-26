@@ -27,9 +27,10 @@ export WTOOL_ZSH_DIR="$WTOOL_PROJECT_DIR"
 
 # 让 `zsh` 去读 `$WTOOL_HOME/.zshenv`（那里按 $WTOOL_HOME 现算 module_path/fpath）。
 #
-# 为什么必须：zsh 的 module_path/fpath 是**编译时前缀**（构建容器里的
-# /root/.wtool/usr/…），换机器就加载不到动态模块（zsh/zle、zsh/parameter…）；
-# MODULE_PATH 又不允许从环境导入 —— `.zshenv` 是**唯一**能修的位置（2026-10-21 VM 实测）。
+# 这条是**兜底层**：安装时 scripts/install.sh 已经把二进制里的编译期占位前缀换成
+# $WTOOL_HOME/usr（H38），所以 `zsh -f` / 脚本直接用编译进去的路径就能加载模块。
+# .zshenv 仍然有用：升级前装好的旧二进制、以及从 bash 起的交互式 zsh（ZDOTDIR 路）。
+# MODULE_PATH 不允许从环境导入，所以旧二进制只能靠它；新二进制不靠它也能工作。
 # 那份 .zshenv 读完会把 ZDOTDIR 还原成 $HOME，所以你的 ~/.zshrc 照旧生效。
 export ZDOTDIR="${ZDOTDIR:-$WTOOL_HOME}"
 
@@ -44,11 +45,12 @@ export ZDOTDIR="${ZDOTDIR:-$WTOOL_HOME}"
 
 # ---------------------------------------------------------------------------
 # ⚠️ **bash 这一段没有对应物，是有意的，不是漏了**
-# env.zsh 在这里设 `fpath` / `module_path` —— 那是 **zsh 自己的**两个特殊参数，
-# 因为 zsh 把 `--prefix`（构建时的绝对路径）编进了二进制，而本机的 $WTOOL_HOME
-# 十有八九不是同一个串。bash 里根本没有这两个变量（也不加载 zsh 的 .so 模块），
-# 所以这里无事可做：**这个项目对 bash 唯一的贡献，就是让 $WTOOL_HOME/usr/bin 里
-# 出现一条 `zsh` 命令**（L2 链），而 PATH 是引擎统一管的。
+# env.zsh 在这里设 `fpath` / `module_path` —— 那是 **zsh 自己的**两个特殊参数。
+# zsh 把 `--prefix`（构建时的占位前缀）编进了二进制；`scripts/install.sh` 在安装时
+# 会把它换成本机的 $WTOOL_HOME/usr（H38），env.zsh 里那段是给旧二进制/交互式兜底。
+# bash 里根本没有这两个变量（也不加载 zsh 的 .so 模块），所以这里无事可做：
+# **这个项目对 bash 唯一的贡献，就是让 $WTOOL_HOME/usr/bin 里出现一条 `zsh` 命令**
+# （L2 链），而 PATH 是引擎统一管的。
 #
 # 别为了"两份看起来一样"往这里塞一段跟 zsh 无关的东西 —— 那只会让下一个人
 # 以为 bash 也需要 fpath。
