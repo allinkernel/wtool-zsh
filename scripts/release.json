@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "project": "shell/zsh",
-  "offlineTag": "offline-2026-10-22-r3",
+  "offlineTag": "offline-2026-10-26",
   "artifacts": {
     "release-offline.zip": [
       {
@@ -93,6 +93,6 @@
       "target": "usr"
     }
   ],
-  "how": "wtool download-release shell/zsh   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release shell/zsh     # 拼分卷 + 解到 __output/\nwtool install shell/zsh            # 装到本机\n\n# 断网机（没有 wtool，也不联网）：从离线 tag offline-2026-10-22-r3 的发布页人工下载\nunzip release-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"\nwtool install shell/zsh            # 东西都在包里，不联网",
+  "how": "wtool download-release shell/zsh   # 下到项目的 __release/（按本文件的 sha256 校验）\nwtool unpack-release shell/zsh     # 拼分卷 + 解到 __output/\nwtool install shell/zsh            # 装到本机\n\n# 断网机（没有 wtool，也不联网）：从离线 tag offline-2026-10-26 的发布页人工下载\nunzip release-offline.zip && cp -a wtool/. \"$WTOOL_HOME/wtool/\"\nwtool install shell/zsh            # 东西都在包里，不联网",
   "dirty": false
 }
